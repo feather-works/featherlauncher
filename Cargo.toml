@@ -1,0 +1,22 @@
+[package]
+name = "featherlauncher"
+version = "0.1.0"
+description = "Instala, atualiza e abre os aplicativos da suíte FeatherWorks"
+authors = ["FeatherWorks"]
+edition = "2021"
+license = "GPL-3.0-only"
+repository = "https://github.com/feather-works/featherlauncher"
+publish = false
+
+[dependencies]
+feather-ui = { git = "https://github.com/feather-works/feather-ui", tag = "v0.2.10" }
+iced = { version = "0.13", features = ["svg", "tokio", "auto-detect-theme"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+serde_json = "1"
+sha2 = "0.10"
+dirs = "6"
+tokio = { version = "1", features = ["rt"] }
+
+[profile.release]
+lto = "thin"
+strip = true

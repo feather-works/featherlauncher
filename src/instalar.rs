@@ -60,6 +60,28 @@ pub fn executavel(app: &App) -> Option<PathBuf> {
     candidatos.into_iter().find(|c| c.exists())
 }
 
+/// A versão de um app que o launcher não instalou, perguntada a quem instalou
+/// (.deb/.rpm, instalador do Windows, Info.plist do .app). Rodar o executável
+/// com `--version` não serve: ele abriria a janela.
+pub fn versao_externa(app: &App, exe: &Path) -> Option<String> {
+    let saida = |cmd: &mut Command| cmd.output().ok().filter(|s| s.status.success()).map(|s| String::from_utf8_lossy(&s.stdout).trim().to_string()).filter(|s| !s.is_empty());
+    let v = if cfg!(windows) {
+        let chave = format!(r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\{}", app.nome());
+        saida(Command::new("reg").args(["query", &chave, "/v", "DisplayVersion"]))?.split_whitespace().last()?.to_string()
+    } else if cfg!(target_os = "macos") {
+        saida(Command::new("defaults").arg("read").arg(exe.join("Contents/Info")).arg("CFBundleShortVersionString"))?
+    } else {
+        saida(Command::new("dpkg-query").args(["-W", "-f=${Version}", app.id])).or_else(|| saida(Command::new("rpm").args(["-q", "--qf", "%{VERSION}", app.id])))?
+    };
+    limpar_versao(&v)
+}
+
+/// "0.1.3-1" (revisão do pacote) e "1:0.1.3" (época) → "0.1.3".
+fn limpar_versao(v: &str) -> Option<String> {
+    let v = v.rsplit(':').next()?.split(['-', '~', '+']).next()?;
+    v.starts_with(|c: char| c.is_ascii_digit()).then(|| v.to_string())
+}
+
 pub fn abrir(app: &App) -> Result<(), String> {
     let exe = executavel(app).ok_or("não encontrei o aplicativo instalado")?;
     let mut cmd = if cfg!(target_os = "macos") {
@@ -70,6 +92,57 @@ pub fn abrir(app: &App) -> Result<(), String> {
         Command::new(&exe)
     };
     cmd.spawn().map(|_| ()).map_err(|e| format!("não abriu: {e}"))
+}
+
+/// Abre a pasta onde o app está no gerenciador de arquivos do sistema.
+pub fn mostrar_pasta(app: &App) -> Result<(), String> {
+    let exe = executavel(app).ok_or("não encontrei o aplicativo instalado")?;
+    let pasta = exe.parent().unwrap_or(&exe);
+    let abridor = if cfg!(windows) { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    Command::new(abridor).arg(pasta).spawn().map(|_| ()).map_err(|e| format!("não abriu a pasta: {e}"))
+}
+
+/// Tira o app do sistema e do registro do launcher. Os documentos e as
+/// configurações da pessoa ficam onde estão.
+pub fn desinstalar(app: &App) -> Result<(), String> {
+    let exe = executavel(app).ok_or("não encontrei o aplicativo instalado")?;
+    desinstalar_em(app, &exe)?;
+    let mut mapa = instalados();
+    if mapa.remove(app.id).is_some() {
+        fs::write(pasta_dados().join("instalados.json"), serde_json::to_vec_pretty(&mapa).unwrap()).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn desinstalar_em(app: &App, exe: &Path) -> Result<(), String> {
+    // Desfaz o instalar.sh; o que veio de .deb/.rpm é do gerenciador de pacotes.
+    let local = dirs::home_dir().unwrap_or_default().join(".local");
+    if !exe.starts_with(&local) {
+        return Err(format!("{} foi instalado pelo sistema; desinstale pelo gerenciador de pacotes", app.nome()));
+    }
+    fs::remove_file(exe).map_err(|e| format!("não apagou {}: {e}", exe.display()))?;
+    let share = local.join("share");
+    let _ = fs::remove_file(share.join("applications").join(format!("{}.desktop", app.id)));
+    let _ = fs::remove_file(share.join("mime/packages").join(format!("{}.xml", app.id)));
+    for t in [16, 24, 32, 48, 64, 128, 256, 512] {
+        let _ = fs::remove_file(share.join(format!("icons/hicolor/{t}x{t}/apps/{}.png", app.id)));
+    }
+    let _ = Command::new("update-mime-database").arg(share.join("mime")).status();
+    let _ = Command::new("update-desktop-database").arg(share.join("applications")).status();
+    Ok(())
+}
+
+#[cfg(windows)]
+fn desinstalar_em(_app: &App, exe: &Path) -> Result<(), String> {
+    // O desinstalador que o NSIS deixou na pasta, sem perguntas.
+    let des = exe.parent().map(|p| p.join("desinstalar.exe")).filter(|d| d.exists()).ok_or("o desinstalador do aplicativo não foi encontrado")?;
+    rodar(Command::new(des).arg("/S"))
+}
+
+#[cfg(target_os = "macos")]
+fn desinstalar_em(_app: &App, exe: &Path) -> Result<(), String> {
+    fs::remove_dir_all(exe).map_err(|e| format!("não apagou {}: {e}", exe.display()))
 }
 
 pub fn baixar_e_instalar(app: &'static App, rel: Release) -> impl Stream<Item = Evento> {
@@ -207,6 +280,13 @@ fn instalar_em(app: &App, pacote: &Path, tmp: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod testes {
     use super::*;
+
+    #[test]
+    fn limpa_a_versao_do_pacote() {
+        assert_eq!(limpar_versao("0.1.3-1").as_deref(), Some("0.1.3"));
+        assert_eq!(limpar_versao("1:0.2.0~rc1").as_deref(), Some("0.2.0"));
+        assert_eq!(limpar_versao("desconhecida"), None);
+    }
 
     #[test]
     fn acha_a_soma_no_sha256sums_e_no_shasum() {

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=FeatherWorks Launcher
+GenericName=Instalador da suíte
+Comment=Instala, atualiza e abre os aplicativos da suíte FeatherWorks
+Exec=featherlauncher
+Icon=featherlauncher
+Terminal=false
+Categories=Utility;
+Keywords=featherworks;feathersheet;featherslide;instalar;atualizar;
+StartupWMClass=featherlauncher

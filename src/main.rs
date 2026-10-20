@@ -1,3 +1,4 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
 //! FeatherWorks Launcher: instala, atualiza e abre os aplicativos da suíte.
 mod instalar;
 mod releases;

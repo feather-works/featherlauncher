@@ -1,6 +1,6 @@
 [package]
 name = "featherlauncher"
-version = "0.1.1"
+version = "0.1.2"
 description = "Instala, atualiza e abre os aplicativos da suíte FeatherWorks"
 authors = ["FeatherWorks"]
 edition = "2021"

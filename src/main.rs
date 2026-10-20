@@ -27,8 +27,15 @@ const LARGURA_BOTAO: f32 = 140.0;
 const LARANJA: &str = "#b45309";
 const VERDE: &str = "#287846";
 const AZUL: &str = "#1a56b8";
+/// A pena do launcher: magenta, cor que nenhum aplicativo da suíte usa.
+const COR_LAUNCHER: &str = "#b8336a";
 
 fn main() -> iced::Result {
+    // Sobra da última atualização no Windows (o .exe em uso só pode ser renomeado).
+    #[cfg(windows)]
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = std::fs::remove_file(exe.with_extension("old"));
+    }
     let (tema, grade) = ler_preferencias();
     aplicar_tema(tema);
     #[allow(unused_mut)]
@@ -177,12 +184,23 @@ enum Msg {
     Tema(Tema),
     Grade(bool),
     VersaoExterna(usize, Option<String>),
+    LauncherRelease(Result<Option<Release>, String>),
+    AtualizarLauncher,
+    LauncherAtualizado(Result<std::path::PathBuf, String>),
     Janela(Option<window::Id>),
     Tamanho(Size),
     Arrastar,
     Minimizar,
     Maximizar,
     Fechar,
+}
+
+/// A versão nova do próprio launcher.
+enum Autoatualizacao {
+    Nada,
+    Disponivel(Release),
+    Atualizando,
+    Falhou(String),
 }
 
 struct Launcher {
@@ -198,6 +216,7 @@ struct Launcher {
     tamanho: Size,
     /// Tentou fechar no meio de uma instalação: o rodapé avisa.
     fechar_bloqueado: bool,
+    launcher: Autoatualizacao,
     janela: Option<window::Id>,
     ultimo_clique_barra: Option<std::time::Instant>,
 }
@@ -215,11 +234,12 @@ impl Launcher {
             grade,
             tamanho: Size::new(1180.0, 720.0),
             fechar_bloqueado: false,
+            launcher: Autoatualizacao::Nada,
             janela: None,
             ultimo_clique_barra: None,
         };
         let t = l.verificar();
-        (l, Task::batch([t, window::get_latest().map(Msg::Janela)]))
+        (l, Task::batch([t, window::get_latest().map(Msg::Janela), Task::perform(releases::ultima("featherlauncher"), Msg::LauncherRelease)]))
     }
 
     fn subscription(&self) -> Subscription<Msg> {
@@ -380,6 +400,32 @@ impl Launcher {
                     linha.instalada = v.or(linha.instalada.take());
                 }
             }
+            Msg::LauncherRelease(r) => {
+                if let Ok(Some(rel)) = r {
+                    if rel.pacote.is_some() && mais_nova(&rel.versao, env!("CARGO_PKG_VERSION")) {
+                        self.launcher = Autoatualizacao::Disponivel(rel);
+                    }
+                }
+            }
+            Msg::AtualizarLauncher => {
+                // Reabrir no meio de uma instalação a mataria.
+                if self.linhas.iter().any(|l| l.download.is_some()) {
+                    self.launcher = Autoatualizacao::Falhou("termine as instalações antes de atualizar o launcher".into());
+                    return Task::none();
+                }
+                let rel = match std::mem::replace(&mut self.launcher, Autoatualizacao::Atualizando) {
+                    Autoatualizacao::Disponivel(rel) => rel,
+                    outro => {
+                        self.launcher = outro;
+                        return Task::none();
+                    }
+                };
+                return Task::perform(instalar::atualizar_launcher(rel), Msg::LauncherAtualizado);
+            }
+            Msg::LauncherAtualizado(r) => match r.and_then(|exe| std::process::Command::new(exe).spawn().map_err(|e| e.to_string())) {
+                Ok(_) => std::process::exit(0),
+                Err(e) => self.launcher = Autoatualizacao::Falhou(e),
+            },
             Msg::Janela(id) => self.janela = id,
             Msg::Tamanho(s) => self.tamanho = s,
             Msg::Arrastar => {
@@ -417,10 +463,11 @@ impl Launcher {
     fn view(&self) -> Element<'_, Msg> {
         let nome = container(
             row![
-                cromo::emblema(),
+                svg(svg::Handle::from_memory(pena_na_cor(COR_LAUNCHER).into_bytes())).width(27).height(27),
                 text("FeatherWorks").size(13).font(NEGRITO),
                 text("Launcher").size(13).color(COR_TEXTO_MUTED()),
                 horizontal_space(),
+                self.botao_launcher(),
                 cromo::acao("settings", "Configurações", Some(Msg::Configuracoes)),
             ]
                 .spacing(10)
@@ -496,6 +543,17 @@ impl Launcher {
     }
 
     /// O que dizer da consulta no rodapé: verificando, ou a cota do GitHub estourada.
+    /// "Atualizar launcher para X" na barra de título, só quando há versão nova.
+    fn botao_launcher(&self) -> Element<'_, Msg> {
+        let botao = |rotulo: String, m: Option<Msg>| button(text(rotulo).size(12).font(NEGRITO)).on_press_maybe(m).padding([4, 12]).style(tema::estilo_botao_primario);
+        match &self.launcher {
+            Autoatualizacao::Nada => Space::new(0, 0).into(),
+            Autoatualizacao::Disponivel(rel) => botao(format!("Atualizar launcher para {}", rel.versao), Some(Msg::AtualizarLauncher)).into(),
+            Autoatualizacao::Atualizando => botao("Atualizando o launcher…".into(), None).into(),
+            Autoatualizacao::Falhou(e) => text(format!("Launcher não atualizou: {e}")).size(12).color(COR_ERRO()).into(),
+        }
+    }
+
     fn situacao(&self) -> Option<(String, Color)> {
         let limite = self.linhas.iter().find_map(|l| match &l.consulta {
             Consulta::Falhou(e) if e.starts_with(releases::LIMITE) => Some(e.clone()),
@@ -815,26 +873,20 @@ fn traco(caminho: &str, tamanho: f32, cor: Color) -> svg::Svg<'static> {
 
 /// A logo do app; quem não tem logo no `feather-ui` ganha a pena da suíte na cor dele.
 fn logo<'a>(app: &App, apagado: bool, tamanho: f32) -> Element<'a, Msg> {
-    let desenho = match app.produto {
-        Some(p) => feather_ui::marca::icone_para(p, false, tamanho),
-        None => svg(svg::Handle::from_memory(pena_na_cor(app.cor).into_bytes())).width(tamanho).height(tamanho),
-    };
-    desenho.opacity(if apagado { 0.55_f32 } else { 1.0 }).into()
+    svg(svg::Handle::from_memory(pena_na_cor(app.cor).into_bytes())).width(tamanho).height(tamanho).opacity(if apagado { 0.55_f32 } else { 1.0 }).into()
 }
 
-/// Os mesmos tons que o `marca::svg_para` usa ao recolorir a pena.
+/// A pena nos mesmos tons que o `marca::svg_para` usa, sem o quadrado de fundo.
 fn pena_na_cor(cor: &str) -> String {
     let base = hex(cor);
-    let claro = |f: f32| {
-        let c = |v: f32| ((v + (1.0 - v) * f) * 255.0).round() as u8;
-        format!("#{:02x}{:02x}{:02x}", c(base.r), c(base.g), c(base.b))
-    };
-    feather_ui::marca::PENA_ORIGINAL
-        .replace("#287846", cor)
-        .replace("#72aa86", &claro(0.40))
-        .replace("#f4faf5", &claro(0.95))
-        .replace("#e8f4eb", &claro(0.88))
-        .replace("#e4f0e7", &claro(0.85))
+    let c = |v: f32| ((v + (1.0 - v) * 0.40) * 255.0).round() as u8;
+    let clara = format!("#{:02x}{:02x}{:02x}", c(base.r), c(base.g), c(base.b));
+    let mut pena = feather_ui::marca::PENA_ORIGINAL.replace("#287846", cor).replace("#72aa86", &clara);
+    if let Some(i) = pena.find("<rect id=\"fundo-arredondado\"") {
+        let fim = pena[i..].find("/>").map_or(i, |f| i + f + 2);
+        pena.replace_range(i..fim, "");
+    }
+    pena
 }
 
 fn estilo_cartao(_: &iced::Theme) -> container::Style {

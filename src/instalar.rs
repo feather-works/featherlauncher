@@ -198,6 +198,73 @@ async fn executar(app: &'static App, rel: &Release, saida: &mut Sender<Evento>) 
     .map_err(|e| e.to_string())?
 }
 
+/// Troca o próprio launcher pela versão `rel` e devolve o executável novo, para reabrir.
+/// Instalado pelo `.deb` (em `/usr/bin`), atualiza pelo `.deb` novo com `pkexec`.
+pub async fn atualizar_launcher(rel: Release) -> Result<PathBuf, String> {
+    let alvo = std::env::current_exe().map_err(|e| e.to_string())?;
+    let pelo_deb = cfg!(target_os = "linux") && alvo.starts_with("/usr");
+    let pacote = if pelo_deb { rel.arquivos.iter().find(|a| a.nome.ends_with("-linux-amd64.deb")).cloned() } else { rel.pacote.clone() };
+    let pacote = pacote.ok_or("esta versão não tem pacote para este sistema")?;
+    let esperado = soma_esperada(&rel, &pacote.nome).await?;
+    let arquivo = parcial(&pacote, &rel.versao);
+    fs::create_dir_all(pasta_downloads()).map_err(|e| e.to_string())?;
+    // Ninguém ouve o progresso: são poucos MB e a tela só mostra "Atualizando…".
+    let (mut saida, _) = iced::futures::channel::mpsc::channel(1);
+    baixar(&pacote, &arquivo, &mut saida).await?;
+    tokio::task::spawn_blocking(move || {
+        if sha256(&arquivo)? != esperado {
+            let _ = fs::remove_file(&arquivo);
+            return Err("o arquivo baixado não confere com o SHA256 da versão; tente de novo".into());
+        }
+        let r = if pelo_deb { rodar(Command::new("pkexec").arg("dpkg").arg("-i").arg(&arquivo)) } else { trocar_launcher(&arquivo, &alvo) };
+        let _ = fs::remove_file(&arquivo);
+        r.map(|_| alvo)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn trocar_launcher(pacote: &Path, alvo: &Path) -> Result<(), String> {
+    let tmp = pasta_downloads().join("featherlauncher-atualizar");
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+    rodar(Command::new("tar").arg("-xzf").arg(pacote).arg("-C").arg(&tmp))?;
+    let novo = fs::read_dir(&tmp).map_err(|e| e.to_string())?.flatten().map(|e| e.path().join("featherlauncher")).find(|p| p.exists()).ok_or("o pacote não tem o executável do launcher")?;
+    let r = trocar_executavel(&novo, alvo);
+    let _ = fs::remove_dir_all(&tmp);
+    r
+}
+
+#[cfg(windows)]
+fn trocar_launcher(pacote: &Path, alvo: &Path) -> Result<(), String> {
+    // O .exe em uso não pode ser sobrescrito, mas pode ser renomeado; o .old sai na próxima abertura.
+    let velho = alvo.with_extension("old");
+    let _ = fs::remove_file(&velho);
+    fs::rename(alvo, &velho).map_err(|e| format!("não deu para trocar {}: {e}", alvo.display()))?;
+    fs::copy(pacote, alvo).map(|_| ()).map_err(|e| {
+        let _ = fs::rename(&velho, alvo);
+        e.to_string()
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn trocar_launcher(_pacote: &Path, _alvo: &Path) -> Result<(), String> {
+    Err("no macOS o launcher ainda não se atualiza sozinho".into())
+}
+
+/// Copia ao lado e renomeia por cima: o Linux deixa trocar o executável em uso, e
+/// uma falha no meio não deixa o launcher pela metade.
+#[cfg(unix)]
+fn trocar_executavel(novo: &Path, alvo: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let sem_permissao = |e: std::io::Error| format!("sem permissão em {} ({e}); baixe o pacote novo na página do launcher", alvo.display());
+    let ao_lado = alvo.with_extension("novo");
+    fs::copy(novo, &ao_lado).map_err(sem_permissao)?;
+    fs::set_permissions(&ao_lado, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    fs::rename(&ao_lado, alvo).map_err(sem_permissao)
+}
+
 /// Continua de onde parou quando já existe um `.parcial` (pedido com `Range`).
 async fn baixar(pacote: &Arquivo, destino: &Path, saida: &mut Sender<Evento>) -> Result<(), String> {
     let ja = fs::metadata(destino).map(|m| m.len()).unwrap_or(0);
@@ -321,6 +388,21 @@ mod testes {
             }
         });
         assert_eq!(ler_instalados(&pasta).len(), 8);
+        let _ = fs::remove_dir_all(&pasta);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn troca_o_executavel_por_cima() {
+        let pasta = std::env::temp_dir().join(format!("featherlauncher-troca-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&pasta);
+        fs::create_dir_all(&pasta).unwrap();
+        let (novo, alvo) = (pasta.join("baixado"), pasta.join("featherlauncher"));
+        fs::write(&novo, "versão nova").unwrap();
+        fs::write(&alvo, "versão velha").unwrap();
+        trocar_executavel(&novo, &alvo).unwrap();
+        assert_eq!(fs::read_to_string(&alvo).unwrap(), "versão nova");
+        assert!(!alvo.with_extension("novo").exists());
         let _ = fs::remove_dir_all(&pasta);
     }
 

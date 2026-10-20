@@ -1,5 +1,4 @@
 //! O catálogo da suíte e a consulta às releases do GitHub.
-use feather_ui::marca::Produto;
 
 pub const ORG: &str = "feather-works";
 /// Começo da mensagem de cota estourada; a tela a reconhece por ele.
@@ -10,8 +9,6 @@ pub struct App {
     /// Segunda metade do nome ("Sheet" em "FeatherSheet"), pintada na cor do app.
     pub sufixo: &'static str,
     pub descricao: &'static str,
-    /// `None` = sem logo própria no `feather-ui` ainda; o launcher recolore a pena.
-    pub produto: Option<Produto>,
     pub cor: &'static str,
 }
 
@@ -22,12 +19,12 @@ impl App {
 }
 
 pub const APPS: [App; 6] = [
-    App { id: "feathersheet", sufixo: "Sheet", descricao: "Planilhas e dados", produto: Some(Produto::FeatherSheet), cor: "#287846" },
-    App { id: "featherslide", sufixo: "Slide", descricao: "Apresentações", produto: Some(Produto::FeatherSlide), cor: "#a87f0c" },
-    App { id: "featherdocs", sufixo: "Docs", descricao: "Documentos de texto", produto: Some(Produto::FeatherDocs), cor: "#236ac7" },
-    App { id: "featherpdf", sufixo: "PDF", descricao: "Leitura e organização de PDF", produto: None, cor: "#c5352b" },
-    App { id: "feathercad", sufixo: "CAD", descricao: "Desenho técnico 2D e 3D", produto: None, cor: "#7048b8" },
-    App { id: "feathercode", sufixo: "Code", descricao: "Editor de código", produto: None, cor: "#0f7184" },
+    App { id: "feathersheet", sufixo: "Sheet", descricao: "Planilhas e dados", cor: "#287846" },
+    App { id: "featherslide", sufixo: "Slide", descricao: "Apresentações", cor: "#a87f0c" },
+    App { id: "featherdocs", sufixo: "Docs", descricao: "Documentos de texto", cor: "#236ac7" },
+    App { id: "featherpdf", sufixo: "PDF", descricao: "Leitura e organização de PDF", cor: "#c5352b" },
+    App { id: "feathercad", sufixo: "CAD", descricao: "Desenho técnico 2D e 3D", cor: "#0f7184" },
+    App { id: "feathercode", sufixo: "Code", descricao: "Editor de código", cor: "#7048b8" },
 ];
 
 #[derive(Debug, Clone)]

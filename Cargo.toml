@@ -9,7 +9,7 @@ repository = "https://github.com/feather-works/featherlauncher"
 publish = false
 
 [dependencies]
-pelicano = { git = "https://github.com/feather-works/pelicano", tag = "v0.1.1" }
+pelicano = { git = "https://github.com/feather-works/pelicano", tag = "v0.1.2" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serde_json = "1"
 sha2 = "0.10"

@@ -184,6 +184,7 @@ enum Msg {
     Tema(Tema),
     Grade(bool),
     VersaoExterna(usize, Option<String>),
+    Amostrar,
     LauncherRelease(Result<Option<Release>, String>),
     AtualizarLauncher,
     LauncherAtualizado(Result<std::path::PathBuf, String>),
@@ -217,6 +218,11 @@ struct Launcher {
     /// Tentou fechar no meio de uma instalação: o rodapé avisa.
     fechar_bloqueado: bool,
     launcher: Autoatualizacao,
+    /// Memória do próprio launcher, para o rodapé.
+    consumo: feather_ui::monitor::Monitor,
+    /// CPU da última amostra e os tempos dela (processo, sistema).
+    cpu: Option<f32>,
+    cpu_antes: Option<(u64, u64)>,
     janela: Option<window::Id>,
     ultimo_clique_barra: Option<std::time::Instant>,
 }
@@ -235,6 +241,9 @@ impl Launcher {
             tamanho: Size::new(1180.0, 720.0),
             fechar_bloqueado: false,
             launcher: Autoatualizacao::Nada,
+            consumo: feather_ui::monitor::Monitor::novo("FeatherWorks Launcher"),
+            cpu: None,
+            cpu_antes: None,
             janela: None,
             ultimo_clique_barra: None,
         };
@@ -246,6 +255,7 @@ impl Launcher {
         Subscription::batch([
             window::resize_events().map(|(_, s)| Msg::Tamanho(s)),
             window::close_requests().map(|_| Msg::Fechar),
+            iced::time::every(std::time::Duration::from_secs(1)).map(|_| Msg::Amostrar),
             // Guarda o cursor sem gerar mensagem: um `on_move` refazia a tela a cada pixel.
             event::listen_with(|e, _, _| {
                 if let Event::Mouse(mouse::Event::CursorMoved { position }) = e {
@@ -399,6 +409,14 @@ impl Launcher {
                 if linha.instalada.as_deref() == Some("?") {
                     linha.instalada = v.or(linha.instalada.take());
                 }
+            }
+            Msg::Amostrar => {
+                self.consumo.amostrar();
+                let agora = tempos_de_cpu();
+                if let (Some((p, t)), Some((p0, t0))) = (agora, self.cpu_antes) {
+                    self.cpu = Some((p.saturating_sub(p0) as f32 / t.saturating_sub(t0).max(1) as f32 * 100.0).clamp(0.0, 100.0));
+                }
+                self.cpu_antes = agora;
             }
             Msg::LauncherRelease(r) => {
                 if let Ok(Some(rel)) = r {
@@ -832,6 +850,15 @@ impl Launcher {
         Dialogo::new("Configurações", corpo).icone("settings").ao_fechar(Msg::Esc).sobre(base)
     }
 
+    /// "RAM 84 MB · CPU 0,3%"; a CPU é da máquina inteira, como no monitor do sistema.
+    fn texto_consumo(&self) -> String {
+        let ram = format!("RAM {} MB", self.consumo.rss_kb().div_ceil(1024));
+        match self.cpu {
+            Some(cpu) => format!("{ram} · CPU {}%", format!("{cpu:.1}").replace('.', ",")),
+            None => ram,
+        }
+    }
+
     fn rodape(&self) -> Element<'_, Msg> {
         let ponto = container(Space::new(7, 7)).style(|_| container::Style { background: Some(hex(VERDE).into()), border: Border { radius: 4.0.into(), ..Default::default() }, ..Default::default() });
         let muted = |s: String| text(s).size(12).color(COR_TEXTO_MUTED());
@@ -845,6 +872,7 @@ impl Launcher {
                         None => muted("Cada pacote é conferido pelo SHA256 da release".into()),
                     },
                     horizontal_space(),
+                    muted(self.texto_consumo()),
                     muted(format!("github.com/{}", releases::ORG)),
                     muted(format!("Launcher {}", env!("CARGO_PKG_VERSION"))),
                 ]
@@ -887,6 +915,16 @@ fn pena_na_cor(cor: &str) -> String {
         pena.replace_range(i..fim, "");
     }
     pena
+}
+
+/// (CPU do launcher, CPU da máquina), em ticks do `/proc`.
+// shortcut: só Linux; no Windows o rodapé mostra só a RAM (GetProcessTimes quando o feather-ui publicar `Monitor::cpu`).
+fn tempos_de_cpu() -> Option<(u64, u64)> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    let campos: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
+    let processo = campos.get(11)?.parse::<u64>().ok()? + campos.get(12)?.parse::<u64>().ok()?;
+    let total = std::fs::read_to_string("/proc/stat").ok()?.lines().next()?.split_whitespace().skip(1).filter_map(|v| v.parse::<u64>().ok()).sum();
+    Some((processo, total))
 }
 
 fn estilo_cartao(_: &iced::Theme) -> container::Style {

@@ -53,9 +53,17 @@ fn main() -> Result<(), Error> {
         // Alt+F4 passa pelo `Msg::Fechar`, que não fecha no meio de uma instalação.
         close_on_request: false,
         app_id: Some("featherlauncher".into()),
+        icon: icone_da_janela(),
         ..Default::default()
     };
     run(settings, move || Launcher::novo(tema, grade))
+}
+
+/// A pena na barra de tarefas (Windows e X11; no Wayland o ícone vem do .desktop).
+fn icone_da_janela() -> Option<Icon> {
+    let img = ::image::load_from_memory(include_bytes!("../pacote/icones/featherlauncher-64.png")).ok()?.to_rgba8();
+    let (w, h) = img.dimensions();
+    Icon::from_rgba(img.into_raw(), w, h).ok()
 }
 
 enum Consulta {

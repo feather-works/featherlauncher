@@ -80,7 +80,7 @@ pub fn executavel(app: &App) -> Option<PathBuf> {
 /// (.deb/.rpm, instalador do Windows, Info.plist do .app). Rodar o executável
 /// com `--version` não serve: ele abriria a janela.
 pub fn versao_externa(app: &App, exe: &Path) -> Option<String> {
-    let saida = |cmd: &mut Command| cmd.output().ok().filter(|s| s.status.success()).map(|s| String::from_utf8_lossy(&s.stdout).trim().to_string()).filter(|s| !s.is_empty());
+    let saida = |cmd: &mut Command| sem_console(cmd).output().ok().filter(|s| s.status.success()).map(|s| String::from_utf8_lossy(&s.stdout).trim().to_string()).filter(|s| !s.is_empty());
     let v = if cfg!(windows) {
         let chave = format!(r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\{}", app.nome());
         saida(Command::new("reg").args(["query", &chave, "/v", "DisplayVersion"]))?.split_whitespace().last()?.to_string()
@@ -343,8 +343,18 @@ fn sha256(caminho: &Path) -> Result<String, String> {
     Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
+/// No Windows, um programa de console (`reg`) aberto pelo launcher piscava uma janela preta.
+fn sem_console(cmd: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
 fn rodar(cmd: &mut Command) -> Result<(), String> {
-    let st = cmd.status().map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
+    let st = sem_console(cmd).status().map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
     st.success().then_some(()).ok_or_else(|| format!("{:?} terminou com {st}", cmd.get_program()))
 }
 

@@ -3,6 +3,7 @@ mod instalar;
 mod releases;
 
 use feather_ui::cromo;
+use feather_ui::dialogo::Dialogo;
 use feather_ui::icones::icone;
 use feather_ui::tema::{self, COR_BORDA, COR_BORDA_SUAVE, COR_ERRO, COR_FUNDO_JANELA, COR_PAINEL, COR_TEXTO, COR_TEXTO_MUTED};
 use iced::widget::{button, column, container, horizontal_space, mouse_area, opaque, progress_bar, row, scrollable, stack, svg, text, text_input, Column, Space};
@@ -18,7 +19,7 @@ const VERDE: &str = "#287846";
 const AZUL: &str = "#1a56b8";
 
 fn main() -> iced::Result {
-    tema::definir_tema(tema::escuro_resolvido(true, false), 0);
+    aplicar_tema(ler_tema());
     #[allow(unused_mut)]
     let mut janela = window::Settings {
         size: Size::new(1180.0, 720.0),
@@ -83,6 +84,38 @@ impl Linha {
     }
 }
 
+/// O tema da janela, guardado em `~/.config/featherworks/launcher.json`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Tema {
+    Automatico,
+    Claro,
+    Escuro,
+}
+
+impl Tema {
+    const TODOS: [(Tema, &'static str, &'static str); 3] = [(Tema::Automatico, "automatico", "Automático"), (Tema::Claro, "claro", "Claro"), (Tema::Escuro, "escuro", "Escuro")];
+}
+
+fn arquivo_preferencias() -> std::path::PathBuf {
+    dirs::config_dir().unwrap_or_else(std::env::temp_dir).join("featherworks/launcher.json")
+}
+
+fn ler_tema() -> Tema {
+    let json: serde_json::Value = std::fs::read(arquivo_preferencias()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    Tema::TODOS.iter().find(|t| json["tema"] == t.1).map_or(Tema::Automatico, |t| t.0)
+}
+
+fn guardar_tema(t: Tema) {
+    let caminho = arquivo_preferencias();
+    let nome = Tema::TODOS.iter().find(|x| x.0 == t).map_or("automatico", |x| x.1);
+    let _ = std::fs::create_dir_all(caminho.parent().unwrap());
+    let _ = std::fs::write(caminho, serde_json::json!({ "tema": nome }).to_string());
+}
+
+fn aplicar_tema(t: Tema) {
+    tema::definir_tema(tema::escuro_resolvido(t == Tema::Automatico, t == Tema::Escuro), 0);
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Filtro {
     Todos,
@@ -110,6 +143,8 @@ enum Msg {
     Desinstalar(usize),
     Desinstalado(usize, Result<(), String>),
     Esc,
+    Configuracoes,
+    Tema(Tema),
     Cursor(Point),
     Janela(Option<window::Id>),
     Tamanho(Size),
@@ -126,6 +161,8 @@ struct Launcher {
     /// O menu "⋯" aberto e onde o clique aconteceu (o menu abre ali).
     menu: Option<(usize, Point)>,
     confirmar: Option<usize>,
+    configuracoes: bool,
+    tema: Tema,
     cursor: Point,
     tamanho: Size,
     janela: Option<window::Id>,
@@ -140,6 +177,8 @@ impl Launcher {
             busca: String::new(),
             menu: None,
             confirmar: None,
+            configuracoes: false,
+            tema: ler_tema(),
             cursor: Point::ORIGIN,
             tamanho: Size::new(1180.0, 720.0),
             janela: None,
@@ -276,6 +315,13 @@ impl Launcher {
             Msg::Esc => {
                 self.menu = None;
                 self.confirmar = None;
+                self.configuracoes = false;
+            }
+            Msg::Configuracoes => self.configuracoes = !self.configuracoes,
+            Msg::Tema(t) => {
+                self.tema = t;
+                aplicar_tema(t);
+                guardar_tema(t);
             }
             Msg::Cursor(p) => self.cursor = p,
             Msg::Janela(id) => self.janela = id,
@@ -307,7 +353,13 @@ impl Launcher {
 
     fn view(&self) -> Element<'_, Msg> {
         let nome = container(
-            row![cromo::emblema(), text("FeatherWorks").size(13).font(NEGRITO), text("Launcher").size(13).color(COR_TEXTO_MUTED())]
+            row![
+                cromo::emblema(),
+                text("FeatherWorks").size(13).font(NEGRITO),
+                text("Launcher").size(13).color(COR_TEXTO_MUTED()),
+                horizontal_space(),
+                cromo::acao("settings", "Configurações", Some(Msg::Configuracoes)),
+            ]
                 .spacing(10)
                 .align_y(Alignment::Center),
         )
@@ -321,6 +373,9 @@ impl Launcher {
         let corpo = column![barra, self.faixa(), self.conteudo(), self.rodape()];
         let base = cromo::moldura_janela(mouse_area(corpo).on_move(Msg::Cursor).into());
 
+        if self.configuracoes {
+            return self.janela_configuracoes(base);
+        }
         match self.menu {
             Some((i, onde)) => stack![base, self.menu_mais(i, onde)].into(),
             None => base,
@@ -585,6 +640,23 @@ impl Launcher {
         let y = if onde.y + 110.0 > self.tamanho.height { onde.y - 110.0 } else { onde.y + 18.0 };
         let posto = container(opaque(painel)).padding(Padding { top: y.max(0.0), left: x, right: 0.0, bottom: 0.0 });
         mouse_area(container(posto).width(Length::Fill).height(Length::Fill)).on_press(Msg::FecharMenu).into()
+    }
+
+    fn janela_configuracoes<'a>(&'a self, base: Element<'a, Msg>) -> Element<'a, Msg> {
+        let opcoes = Tema::TODOS.iter().fold(row![].spacing(4), |r, &(t, _, rotulo)| {
+            r.push(button(text(rotulo).size(13)).on_press(Msg::Tema(t)).padding([6, 14]).style(tema::estilo_aba_faixa(self.tema == t)))
+        });
+        let destino = if cfg!(windows) { "%LOCALAPPDATA%\\Programs" } else if cfg!(target_os = "macos") { "~/Applications" } else { "~/.local" };
+        let corpo = column![
+            feather_ui::dialogo::secao("Aparência"),
+            row![text("Tema").size(13).width(120), opcoes].align_y(Alignment::Center),
+            feather_ui::dialogo::secao("Instalação"),
+            feather_ui::dialogo::linha_rotulo_valor("Pasta", destino),
+            feather_ui::dialogo::linha_rotulo_valor("Versões de", format!("github.com/{}", releases::ORG)),
+            feather_ui::dialogo::linha_rotulo_valor("Launcher", env!("CARGO_PKG_VERSION")),
+        ]
+        .spacing(10);
+        Dialogo::new("Configurações", corpo).icone("settings").ao_fechar(Msg::Esc).sobre(base)
     }
 
     fn rodape(&self) -> Element<'_, Msg> {

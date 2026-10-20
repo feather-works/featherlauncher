@@ -123,18 +123,28 @@ async fn pelas_paginas(id: &str) -> Result<Option<Release>, String> {
         return Ok(None);
     }
     let feed = resp.text().await.map_err(|e| e.to_string())?;
-    let Some(tag) = tag_do_feed(&feed) else { return Ok(None) };
+    let Some((tag, quando)) = entrada_do_feed(&feed) else { return Ok(None) };
     let base = format!("https://github.com/{ORG}/{id}/releases/download/{tag}/");
     let resp = cliente().get(format!("{base}SHA256SUMS")).send().await.map_err(|e| e.to_string())?;
-    let somas = if resp.status().is_success() { resp.text().await.map_err(|e| e.to_string())? } else { String::new() };
-    Ok(Some(release_das_somas(&tag, &base, &somas)))
+    // O feed lista também tag sem release (o FeatherDocs tem a v0.0.1 assim): sem
+    // SHA256SUMS não há o que instalar, então conta como "sem release".
+    // shortcut: só olha a entrada mais nova; uma tag solta mais nova esconde uma release antiga.
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+    let somas = resp.text().await.map_err(|e| e.to_string())?;
+    let mut r = release_das_somas(&tag, &base, &somas);
+    r.data = data_br(&quando);
+    Ok(Some(r))
 }
 
-/// A primeira entrada do feed é a release mais nova.
-fn tag_do_feed(feed: &str) -> Option<String> {
+/// A primeira entrada do feed é a mais nova: a tag e quando saiu.
+fn entrada_do_feed(feed: &str) -> Option<(String, String)> {
     let entrada = &feed[feed.find("<entry>")?..];
-    let resto = &entrada[entrada.find("/releases/tag/")? + "/releases/tag/".len()..];
-    Some(resto[..resto.find(['"', '<'])?].to_string())
+    let depois = |marca: &str| entrada.find(marca).map(|i| &entrada[i + marca.len()..]);
+    let tag = depois("/releases/tag/")?;
+    let quando = depois("<updated>").unwrap_or_default();
+    Some((tag[..tag.find(['"', '<'])?].to_string(), quando[..quando.find('<').unwrap_or(0)].to_string()))
 }
 
 fn release_das_somas(tag: &str, base: &str, somas: &str) -> Release {
@@ -212,8 +222,10 @@ mod testes {
     #[test]
     fn acha_a_tag_no_feed() {
         let feed = r#"<feed><link href="https://github.com/x/y/releases"/><entry><link rel="alternate" type="text/html" href="https://github.com/x/y/releases/tag/v0.2.0"/></entry><entry><link href="https://github.com/x/y/releases/tag/v0.1.0"/></entry></feed>"#;
-        assert_eq!(tag_do_feed(feed).as_deref(), Some("v0.2.0"));
-        assert_eq!(tag_do_feed("<feed></feed>"), None);
+        assert_eq!(entrada_do_feed(feed).map(|e| e.0).as_deref(), Some("v0.2.0"));
+        assert_eq!(entrada_do_feed("<feed></feed>"), None);
+        let com_data = r#"<entry><updated>2026-10-20T00:23:34Z</updated><link href="https://github.com/x/y/releases/tag/v0.1.0"/></entry>"#;
+        assert_eq!(entrada_do_feed(com_data), Some(("v0.1.0".into(), "2026-10-20T00:23:34Z".into())));
     }
 
     #[test]

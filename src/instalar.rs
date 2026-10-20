@@ -107,6 +107,15 @@ pub fn abrir(app: &App) -> Result<(), String> {
     } else {
         Command::new(&exe)
     };
+    // No Linux, num escopo próprio como o menu do GNOME faz (`app-gnome-<id>-…`): sem
+    // isso o app fica dentro do launcher e o Recursos não o mostra com logo e nome.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let unidade = format!("--unit=app-gnome-{}-{}", app.id, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()));
+        if Command::new("systemd-run").args(["--user", "--scope", "--quiet", "--collect", &unidade]).arg(&exe).spawn().is_ok() {
+            return Ok(());
+        }
+    }
     cmd.spawn().map(|_| ()).map_err(|e| format!("não abriu: {e}"))
 }
 

@@ -344,7 +344,7 @@ fn sha256(caminho: &Path) -> Result<String, String> {
 }
 
 /// No Windows, um programa de console (`reg`) aberto pelo launcher piscava uma janela preta.
-fn sem_console(cmd: &mut Command) -> &mut Command {
+pub fn sem_console(cmd: &mut Command) -> &mut Command {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -396,9 +396,79 @@ fn instalar_em(app: &App, pacote: &Path, tmp: &Path) -> Result<(), String> {
     r
 }
 
+/// O atalho que o login do Linux abre sozinho (padrão XDG, vale para GNOME, KDE e os outros).
+#[cfg(all(unix, not(target_os = "macos")))]
+fn atalho_de_inicio() -> PathBuf {
+    dirs::config_dir().unwrap_or_default().join("autostart/featherlauncher.desktop")
+}
+
+/// Ao entrar no computador, o launcher confere as atualizações em segundo plano (`--bandeja`)?
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn inicia_com_sistema() -> bool {
+    atalho_de_inicio().exists()
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn iniciar_com_sistema(sim: bool) -> Result<(), String> {
+    let atalho = atalho_de_inicio();
+    if !sim {
+        return fs::remove_file(&atalho).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e.to_string()) });
+    }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    fs::create_dir_all(atalho.parent().unwrap()).map_err(|e| e.to_string())?;
+    let entrada = format!("[Desktop Entry]\nType=Application\nName=FeatherWorks Launcher\nExec=\"{}\" --bandeja\nIcon=featherlauncher\nTerminal=false\nX-GNOME-Autostart-enabled=true\n", exe.display());
+    fs::write(&atalho, entrada).map_err(|e| format!("não gravou {}: {e}", atalho.display()))
+}
+
+/// A chave que o Windows lê ao entrar o usuário; sem administrador.
+#[cfg(windows)]
+const CHAVE_INICIO: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+
+#[cfg(windows)]
+pub fn inicia_com_sistema() -> bool {
+    sem_console(Command::new("reg").args(["query", CHAVE_INICIO, "/v", "FeatherWorksLauncher"])).output().is_ok_and(|s| s.status.success())
+}
+
+#[cfg(windows)]
+pub fn iniciar_com_sistema(sim: bool) -> Result<(), String> {
+    if !sim {
+        // Sem a entrada, o `reg delete` falha; para quem pediu "não", tanto faz.
+        let _ = sem_console(Command::new("reg").args(["delete", CHAVE_INICIO, "/v", "FeatherWorksLauncher", "/f"])).output();
+        return Ok(());
+    }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    rodar(Command::new("reg").args(["add", CHAVE_INICIO, "/v", "FeatherWorksLauncher", "/t", "REG_SZ", "/f", "/d"]).arg(format!("\"{}\" --bandeja", exe.display())))
+}
+
+#[cfg(target_os = "macos")]
+pub fn inicia_com_sistema() -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+pub fn iniciar_com_sistema(_sim: bool) -> Result<(), String> {
+    Err("no macOS o launcher ainda não abre sozinho com o sistema".into())
+}
+
 #[cfg(test)]
 mod testes {
     use super::*;
+
+    #[test]
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn abrir_com_o_sistema_liga_e_desliga() {
+        // Só este teste mexe no XDG_CONFIG_HOME; os outros usam pastas próprias.
+        let pasta = std::env::temp_dir().join(format!("featherlauncher-inicio-{}", std::process::id()));
+        std::env::set_var("XDG_CONFIG_HOME", &pasta);
+        iniciar_com_sistema(true).unwrap();
+        assert!(inicia_com_sistema());
+        let exe = std::env::current_exe().unwrap();
+        assert!(fs::read_to_string(atalho_de_inicio()).unwrap().contains(&format!("Exec=\"{}\" --bandeja", exe.display())));
+        iniciar_com_sistema(false).unwrap();
+        assert!(!inicia_com_sistema());
+        iniciar_com_sistema(false).unwrap();
+        let _ = fs::remove_dir_all(&pasta);
+    }
 
     #[test]
     fn instalacoes_em_paralelo_nao_apagam_umas_as_outras() {

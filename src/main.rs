@@ -1,5 +1,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 //! FeatherWorks Launcher: instala, atualiza e abre os aplicativos da suíte.
+mod aviso;
+mod bandeja;
 mod consumo;
 mod instalar;
 mod releases;
@@ -41,7 +43,12 @@ fn main() -> Result<(), Error> {
     if let Ok(exe) = std::env::current_exe() {
         let _ = std::fs::remove_file(exe.with_extension("old"));
     }
-    let (tema, grade) = ler_preferencias();
+    // O que o login abre: o ícone na bandeja, que confere as versões e avisa por notificação.
+    if std::env::args().any(|a| a == "--bandeja") {
+        bandeja::rodar();
+        return Ok(());
+    }
+    let (tema, grade, perguntou_inicio) = ler_preferencias();
     aplicar_tema(tema);
     let settings = Settings {
         title: "FeatherWorks Launcher".into(),
@@ -56,7 +63,7 @@ fn main() -> Result<(), Error> {
         icon: icone_da_janela(),
         ..Default::default()
     };
-    run(settings, move || Launcher::novo(tema, grade))
+    run(settings, move || Launcher::novo(tema, grade, perguntou_inicio))
 }
 
 /// A pena na barra de tarefas (Windows e X11; no Wayland o ícone vem do .desktop).
@@ -127,17 +134,34 @@ fn arquivo_preferencias() -> std::path::PathBuf {
     dirs::config_dir().unwrap_or_else(std::env::temp_dir).join("featherworks/launcher.json")
 }
 
-/// Tema e modo de exibição (`true` = grade).
-fn ler_preferencias() -> (Tema, bool) {
-    let json: serde_json::Value = std::fs::read(arquivo_preferencias()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-    (Tema::TODOS.iter().find(|t| json["tema"] == t.1).map_or(Tema::Automatico, |t| t.0), json["modo"] == "grade")
+fn json_preferencias() -> serde_json::Value {
+    std::fs::read(arquivo_preferencias()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+/// Tema, modo de exibição (`true` = grade) e se já perguntou sobre abrir com o sistema.
+fn ler_preferencias() -> (Tema, bool, bool) {
+    let json = json_preferencias();
+    (Tema::TODOS.iter().find(|t| json["tema"] == t.1).map_or(Tema::Automatico, |t| t.0), json["modo"] == "grade", json["perguntou_inicio"] == true)
+}
+
+/// Muda só as chaves pedidas: as outras preferências ficam como estão no arquivo.
+fn alterar_preferencias(mudar: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>)) {
+    let caminho = arquivo_preferencias();
+    let mut json = match json_preferencias() {
+        serde_json::Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    };
+    mudar(&mut json);
+    let _ = std::fs::create_dir_all(caminho.parent().unwrap());
+    let _ = std::fs::write(caminho, serde_json::Value::Object(json).to_string());
 }
 
 fn guardar_preferencias(t: Tema, grade: bool) {
-    let caminho = arquivo_preferencias();
     let nome = Tema::TODOS.iter().find(|x| x.0 == t).map_or("automatico", |x| x.1);
-    let _ = std::fs::create_dir_all(caminho.parent().unwrap());
-    let _ = std::fs::write(caminho, serde_json::json!({ "tema": nome, "modo": if grade { "grade" } else { "lista" } }).to_string());
+    alterar_preferencias(|j| {
+        j.insert("tema".into(), nome.into());
+        j.insert("modo".into(), if grade { "grade" } else { "lista" }.into());
+    });
 }
 
 static ESCURO: AtomicBool = AtomicBool::new(true);
@@ -442,6 +466,7 @@ enum Msg {
     Configuracoes,
     Tema(Tema),
     Grade(bool),
+    IniciarComSistema(bool),
     VersaoExterna(usize, Option<String>),
     Amostrar,
     LauncherRelease(Result<Option<Release>, String>),
@@ -474,6 +499,10 @@ struct Launcher {
     cursor: Cell<Point>,
     confirmar: Option<usize>,
     configuracoes: bool,
+    /// Primeira abertura: pergunta se o launcher deve abrir junto com o computador.
+    perguntar_inicio: bool,
+    inicia_com_sistema: bool,
+    erro_inicio: Option<String>,
     tema: Tema,
     grade: bool,
     tamanho: Size,
@@ -487,7 +516,7 @@ struct Launcher {
 }
 
 impl Launcher {
-    fn novo(tema: Tema, grade: bool) -> (Self, Task<Msg>) {
+    fn novo(tema: Tema, grade: bool, perguntou_inicio: bool) -> (Self, Task<Msg>) {
         let img = ::image::load_from_memory(include_bytes!("../assets/fundo.jpg")).map(|i| i.to_rgba8()).unwrap_or_default();
         let (w, h) = img.dimensions();
         let mut l = Launcher {
@@ -498,6 +527,10 @@ impl Launcher {
             cursor: Cell::new(Point::ORIGIN),
             confirmar: None,
             configuracoes: false,
+            // A captura de tela não espera resposta de ninguém; no macOS ainda não há como abrir junto.
+            perguntar_inicio: !perguntou_inicio && !cfg!(target_os = "macos") && std::env::var_os("FEATHERLAUNCHER_CAPTURAR").is_none(),
+            inicia_com_sistema: instalar::inicia_com_sistema(),
+            erro_inicio: None,
             tema,
             grade,
             tamanho: TAMANHO_INICIAL,
@@ -863,19 +896,35 @@ impl Launcher {
                 valor("Pasta", instalar::destino().into()),
                 valor("Versões de", format!("github.com/{}", releases::ORG)),
                 valor("Launcher", env!("CARGO_PKG_VERSION").into()),
+                toggler("Ícone na bandeja e aviso de atualizações ao ligar o computador", self.inicia_com_sistema).size(13).on_toggle(Msg::IniciarComSistema),
             ]
             .spacing(12),
-        )
-        .padding(20.0)
-        .width(460.0)
-        .style(|_| Style::default().background(painel()).border(Border::rounded(12.0).color(borda(), 1.0)).shadow(Shadow { color: Color::BLACK.alpha(0.4), offset: Point::new(0.0, 10.0), blur: 32.0 }).text_color(texto()));
-        // O véu escurece o resto e, clicado, fecha.
-        let veu = mouse_area(container(Space::new(Length::FILL, Length::FILL)).width(Length::FILL).height(Length::FILL).style(caixa(Color::BLACK.alpha(if escuro() { 0.6 } else { 0.45 }), RAIO_JANELA, None))).on_press(Msg::Esc);
-        stack![veu, container(opaque(dialogo)).width(Length::FILL).height(Length::FILL).center()].into()
+        );
+        modal(dialogo)
+    }
+
+    fn pergunta_inicio(&self) -> Element<'_, Msg> {
+        let dialogo = container(
+            column![
+                row![pena(COR_LAUNCHER, 28.0, false), text("Avisar das atualizações?").size(16).font(Font::SEMIBOLD)].spacing(10).align(Align::Center),
+                text("Quando você entrar no computador, o launcher fica como um ícone pequeno na bandeja, confere se algum aplicativo tem versão nova e avisa por notificação. Dá para mudar depois em Configurações.").size(13).color(mudo()),
+                row![
+                    horizontal_space(),
+                    button(text("Agora não").size(13)).on_press(Msg::IniciarComSistema(false)).padding([9u16, 14]).style(botao_vidro),
+                    button(text("Sim, avisar").size(13).font(Font::SEMIBOLD)).on_press(Msg::IniciarComSistema(true)).padding([9u16, 16]).style(destaque),
+                ]
+                .spacing(8),
+            ]
+            .spacing(14),
+        );
+        modal(dialogo)
     }
 
     /// O que dizer no rodapé: o fechar bloqueado, a cota do GitHub estourada ou "Verificando…".
     fn situacao(&self) -> Option<(String, Color)> {
+        if let Some(e) = &self.erro_inicio {
+            return Some((format!("Não deu para ligar o aviso de atualizações: {e}"), tom(LARANJA)));
+        }
         if self.fechar_bloqueado && self.ocupado() {
             return Some(("Espere terminar a instalação para fechar".into(), tom(LARANJA)));
         }
@@ -1022,6 +1071,7 @@ impl App for Launcher {
                     Err(e) => linha.erro = Some(e),
                 }
             }
+            Msg::Esc if self.perguntar_inicio => return self.update(Msg::IniciarComSistema(false)),
             Msg::Esc => {
                 self.menu = None;
                 self.confirmar = None;
@@ -1032,6 +1082,16 @@ impl App for Launcher {
                 self.tema = t;
                 aplicar_tema(t);
                 guardar_preferencias(t, self.grade);
+            }
+            Msg::IniciarComSistema(sim) => {
+                if self.perguntar_inicio {
+                    self.perguntar_inicio = false;
+                    alterar_preferencias(|j| {
+                        j.insert("perguntou_inicio".into(), true.into());
+                    });
+                }
+                self.erro_inicio = instalar::iniciar_com_sistema(sim).err();
+                self.inicia_com_sistema = instalar::inicia_com_sistema();
             }
             Msg::Grade(g) => {
                 self.grade = g;
@@ -1129,7 +1189,9 @@ impl App for Launcher {
         // No claro, um véu branco deixa a foto em tons pastel: vidro claro sobre foto escura fica cinza.
         let veu = container(Space::new(Length::FILL, Length::FILL)).style(caixa(Color::WHITE.alpha(if escuro() { 0.0 } else { 0.42 }), 0.0, None));
         let mut camadas = stack![fundo, veu, corpo, self.alcas()];
-        if self.configuracoes {
+        if self.perguntar_inicio {
+            camadas = camadas.push(self.pergunta_inicio());
+        } else if self.configuracoes {
             camadas = camadas.push(self.configuracoes());
         } else if let Some((i, onde)) = self.menu {
             camadas = camadas.push(self.menu_mais(i, onde));
@@ -1137,6 +1199,16 @@ impl App for Launcher {
         // A foto e tudo por cima ficam dentro dos cantos da janela.
         container(camadas).width(Length::FILL).height(Length::FILL).clip(true).style(|_| Style::default().border(Border::rounded(RAIO_JANELA).color(borda(), 1.0)).text_color(texto())).into()
     }
+}
+
+/// Um diálogo no meio da janela; o véu escurece o resto e, clicado, fecha (`Msg::Esc`).
+fn modal<'a>(dialogo: Container<'a, Msg>) -> Element<'a, Msg> {
+    let dialogo = dialogo
+        .padding(20.0)
+        .width(460.0)
+        .style(|_| Style::default().background(painel()).border(Border::rounded(12.0).color(borda(), 1.0)).shadow(Shadow { color: Color::BLACK.alpha(0.4), offset: Point::new(0.0, 10.0), blur: 32.0 }).text_color(texto()));
+    let veu = mouse_area(container(Space::new(Length::FILL, Length::FILL)).width(Length::FILL).height(Length::FILL).style(caixa(Color::BLACK.alpha(if escuro() { 0.6 } else { 0.45 }), RAIO_JANELA, None))).on_press(Msg::Esc);
+    stack![veu, container(opaque(dialogo)).width(Length::FILL).height(Length::FILL).center()].into()
 }
 
 /// Até quatro etiquetas; com mais, três e um "+N".
@@ -1177,7 +1249,7 @@ mod testes {
     fn tela_desenha() {
         for e in [true, false] {
             ESCURO.store(e, Ordering::Relaxed);
-            let (mut l, _) = Launcher::novo(Tema::Escuro, false);
+            let (mut l, _) = Launcher::novo(Tema::Escuro, false, true);
             for grade in [false, true] {
                 l.grade = grade;
                 l.menu = Some((0, Point::new(1200.0, 300.0)));

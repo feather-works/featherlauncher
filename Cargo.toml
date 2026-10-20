@@ -1,6 +1,6 @@
 [package]
 name = "featherlauncher"
-version = "0.1.4"
+version = "0.1.5"
 description = "Instala, atualiza e abre os aplicativos da suíte FeatherWorks"
 authors = ["FeatherWorks"]
 edition = "2021"
@@ -21,6 +21,10 @@ image = { version = "0.24", default-features = false, features = ["jpeg", "png"]
 [build-dependencies]
 # O ícone embutido no .exe do Windows (build.rs).
 embed-resource = "3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# O ícone na bandeja (StatusNotifierItem pelo D-Bus: KDE e a extensão AppIndicator do GNOME), sem GTK.
+ksni = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 # RAM e CPU do launcher no rodapé.

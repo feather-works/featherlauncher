@@ -87,6 +87,10 @@ pub async fn ultima(id: &'static str) -> Result<Option<Release>, String> {
         return Ok(None);
     }
     if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        // Sem cota na API: as páginas do github.com não contam.
+        if let Ok(r) = pelas_paginas(id).await {
+            return Ok(r);
+        }
         if let Some(g) = &guardado {
             return do_guardado(g);
         }
@@ -106,6 +110,36 @@ pub async fn ultima(id: &'static str) -> Result<Option<Release>, String> {
     let json: serde_json::Value = serde_json::from_str(&corpo).map_err(|e| e.to_string())?;
     guardar(id, etag.as_deref(), Some(&corpo));
     Ok(Some(ler_release(&json)))
+}
+
+/// O caminho sem cota (o mesmo do craft-launcher): o redirecionamento de
+/// `releases/latest` diz a tag, e o `SHA256SUMS` dela lista os arquivos. Não traz
+/// tamanho nem data; o tamanho chega com o download.
+async fn pelas_paginas(id: &str) -> Result<Option<Release>, String> {
+    let resp = cliente().get(format!("https://github.com/{ORG}/{id}/releases/latest")).send().await.map_err(|e| e.to_string())?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    // Sem release, o github.com manda para a lista de releases em vez de uma tag.
+    let Some(tag) = resp.url().path().split("/releases/tag/").nth(1).map(str::to_string) else { return Ok(None) };
+    let base = format!("https://github.com/{ORG}/{id}/releases/download/{tag}/");
+    let resp = cliente().get(format!("{base}SHA256SUMS")).send().await.map_err(|e| e.to_string())?;
+    let somas = if resp.status().is_success() { resp.text().await.map_err(|e| e.to_string())? } else { String::new() };
+    Ok(Some(release_das_somas(&tag, &base, &somas)))
+}
+
+fn release_das_somas(tag: &str, base: &str, somas: &str) -> Release {
+    let mut arquivos: Vec<Arquivo> = somas
+        .lines()
+        .filter_map(|l| l.split_whitespace().nth(1))
+        .map(|n| n.trim_start_matches('*').rsplit('/').next().unwrap_or(n).to_string())
+        .map(|nome| Arquivo { url: format!("{base}{nome}"), nome, tamanho: 0 })
+        .collect();
+    if !somas.is_empty() {
+        arquivos.push(Arquivo { nome: "SHA256SUMS".into(), url: format!("{base}SHA256SUMS"), tamanho: 0 });
+    }
+    let pacote = arquivos.iter().find(|a| a.nome.ends_with(sufixo_do_sistema())).cloned();
+    Release { versao: tag.trim_start_matches('v').to_string(), data: "—".into(), pacote, arquivos }
 }
 
 fn arquivo_guardado(id: &str) -> std::path::PathBuf {
@@ -164,6 +198,15 @@ mod testes {
         assert!(mais_nova("0.10.0", "0.9.1"));
         assert!(mais_nova("0.1.4", "0.1.3"));
         assert!(!mais_nova("0.1.3", "0.1.3"));
+    }
+
+    #[test]
+    fn monta_a_release_pelo_sha256sums() {
+        let somas = "aa  feathersheet-0.1.3-linux-x86_64.tar.gz\nbb  FeatherSheet-0.1.3-windows-x64.exe\ncc  dist-mac/FeatherSheet-0.1.3.dmg\n";
+        let r = release_das_somas("v0.1.3", "https://x/", somas);
+        assert_eq!(r.versao, "0.1.3");
+        assert!(r.pacote.unwrap().url.starts_with("https://x/"));
+        assert!(r.arquivos.iter().any(|a| a.nome == "SHA256SUMS") && r.arquivos.iter().any(|a| a.nome == "FeatherSheet-0.1.3.dmg"));
     }
 
     #[test]

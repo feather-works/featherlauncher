@@ -456,7 +456,7 @@ impl Launcher {
             _ => text("—").size(13).font(MONO).color(COR_TEXTO_MUTED()).into(),
         };
         let mut col_versao = column![versao].spacing(4);
-        if let Some(r) = rel {
+        if let Some(r) = rel.filter(|r| r.data != "—") {
             col_versao = col_versao.push(text(format!("Lançada em {}", r.data)).size(12).color(COR_TEXTO_MUTED()));
         }
 
@@ -545,7 +545,7 @@ impl Launcher {
                     (Some(r), _, _) => row![secundario("Abrir", Msg::Abrir(i)), primario(text(format!("Atualizar para {}", r.versao)).size(13).font(NEGRITO).into(), Msg::Instalar(i)), mais],
                     (None, true, _) => row![secundario("Abrir", Msg::Abrir(i)), mais],
                     (None, false, Some(r)) => {
-                        let tamanho = r.pacote.as_ref().map_or(String::new(), |p| format!(" · {}", megas(p.tamanho)));
+                        let tamanho = r.pacote.as_ref().filter(|p| p.tamanho > 0).map_or(String::new(), |p| format!(" · {}", megas(p.tamanho)));
                         let rotulo = row![traco(ICONE_BAIXAR, 16.0, Color::WHITE), text(format!("Instalar{tamanho}")).size(13).font(NEGRITO)].spacing(8).align_y(Alignment::Center);
                         row![primario(rotulo.into(), Msg::Instalar(i))]
                     }

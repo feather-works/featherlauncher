@@ -193,6 +193,10 @@ async fn baixar(pacote: &Arquivo, destino: &Path, saida: &mut Sender<Evento>) ->
         pedido = pedido.header(reqwest::header::RANGE, format!("bytes={ja}-"));
     }
     let mut resp = pedido.send().await.map_err(|e| format!("sem conexão: {e}"))?;
+    // Tamanho desconhecido (release lida pelas páginas) e o .parcial já inteiro: o SHA256 confere.
+    if resp.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+        return Ok(());
+    }
     if !resp.status().is_success() {
         return Err(format!("o download respondeu {}", resp.status()));
     }
@@ -200,16 +204,17 @@ async fn baixar(pacote: &Arquivo, destino: &Path, saida: &mut Sender<Evento>) ->
     let continua = resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
     let mut arq = fs::OpenOptions::new().create(true).write(true).append(continua).truncate(!continua).open(destino).map_err(|e| e.to_string())?;
     let mut baixado = if continua { ja } else { 0 };
+    let total = if pacote.tamanho > 0 { pacote.tamanho } else { baixado + resp.content_length().unwrap_or(0) };
     let mut avisado = 0;
     while let Some(bloco) = resp.chunk().await.map_err(|e| format!("o download parou: {e}"))? {
         arq.write_all(&bloco).map_err(|e| e.to_string())?;
         baixado += bloco.len() as u64;
         if baixado - avisado >= 256 * 1024 {
             avisado = baixado;
-            let _ = saida.send(Evento::Progresso { baixado, total: pacote.tamanho }).await;
+            let _ = saida.send(Evento::Progresso { baixado, total }).await;
         }
     }
-    let _ = saida.send(Evento::Progresso { baixado, total: pacote.tamanho }).await;
+    let _ = saida.send(Evento::Progresso { baixado, total }).await;
     Ok(())
 }
 

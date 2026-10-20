@@ -61,18 +61,64 @@ pub fn cliente() -> reqwest::Client {
 }
 
 /// `Ok(None)` = o app ainda não tem release (ou nem repositório).
+///
+/// Sem login o GitHub dá 60 consultas por hora; a resposta fica guardada com o
+/// ETag e a próxima pergunta só "mudou?" — o 304 não gasta a cota. Com a cota
+/// estourada, vale o que estava guardado.
 pub async fn ultima(id: &'static str) -> Result<Option<Release>, String> {
+    let guardado = ler_guardado(id);
     let url = format!("https://api.github.com/repos/{ORG}/{id}/releases/latest");
-    let resp = cliente().get(url).send().await.map_err(|e| format!("sem conexão: {e}"))?;
-    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+    let mut pedido = cliente().get(url);
+    if let Some(etag) = guardado.as_ref().and_then(|g| g["etag"].as_str()) {
+        pedido = pedido.header(reqwest::header::IF_NONE_MATCH, etag);
+    }
+    let resp = pedido.send().await.map_err(|e| format!("sem conexão: {e}"))?;
+    let status = resp.status();
+    let do_guardado = |g: &serde_json::Value| g["corpo"].as_str().map(|c| serde_json::from_str(c).map(|j| ler_release(&j)).map_err(|e| e.to_string())).transpose();
+    if status == reqwest::StatusCode::NOT_MODIFIED {
+        if let Some(g) = &guardado {
+            return do_guardado(g);
+        }
+    }
+    if status == reqwest::StatusCode::NOT_FOUND {
+        guardar(id, None, None);
         return Ok(None);
     }
-    if !resp.status().is_success() {
-        return Err(format!("GitHub respondeu {}", resp.status()));
+    if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        if let Some(g) = &guardado {
+            return do_guardado(g);
+        }
+        let minutos = resp
+            .headers()
+            .get("x-ratelimit-reset")
+            .and_then(|v| v.to_str().ok()?.parse::<u64>().ok())
+            .and_then(|fim| fim.checked_sub(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs()))
+            .map_or(String::new(), |s| format!(" em {} min", s.div_ceil(60)));
+        return Err(format!("o GitHub limitou as consultas por agora; tente de novo{minutos}"));
     }
+    if !status.is_success() {
+        return Err(format!("GitHub respondeu {status}"));
+    }
+    let etag = resp.headers().get(reqwest::header::ETAG).and_then(|v| v.to_str().ok()).map(str::to_string);
     let corpo = resp.text().await.map_err(|e| e.to_string())?;
     let json: serde_json::Value = serde_json::from_str(&corpo).map_err(|e| e.to_string())?;
+    guardar(id, etag.as_deref(), Some(&corpo));
     Ok(Some(ler_release(&json)))
+}
+
+fn arquivo_guardado(id: &str) -> std::path::PathBuf {
+    dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("featherworks/releases").join(format!("{id}.json"))
+}
+
+fn ler_guardado(id: &str) -> Option<serde_json::Value> {
+    serde_json::from_slice(&std::fs::read(arquivo_guardado(id)).ok()?).ok()
+}
+
+/// `corpo` nulo = sem release; guardado também, para valer quando a cota estourar.
+fn guardar(id: &str, etag: Option<&str>, corpo: Option<&str>) {
+    let caminho = arquivo_guardado(id);
+    let _ = std::fs::create_dir_all(caminho.parent().unwrap());
+    let _ = std::fs::write(caminho, serde_json::json!({ "etag": etag, "corpo": corpo }).to_string());
 }
 
 fn ler_release(json: &serde_json::Value) -> Release {

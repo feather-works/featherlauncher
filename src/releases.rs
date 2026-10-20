@@ -9,6 +9,8 @@ pub struct App {
     /// Segunda metade do nome ("Sheet" em "FeatherSheet"), pintada na cor do app.
     pub sufixo: &'static str,
     pub descricao: &'static str,
+    /// O que o app faz, em etiquetas curtas na lista.
+    pub etiquetas: &'static [&'static str],
     pub cor: &'static str,
 }
 
@@ -19,12 +21,12 @@ impl App {
 }
 
 pub const APPS: [App; 6] = [
-    App { id: "feathersheet", sufixo: "Sheet", descricao: "Planilhas e dados", cor: "#287846" },
-    App { id: "featherslide", sufixo: "Slide", descricao: "Apresentações", cor: "#a87f0c" },
-    App { id: "featherdocs", sufixo: "Docs", descricao: "Documentos de texto", cor: "#236ac7" },
-    App { id: "featherpdf", sufixo: "PDF", descricao: "Leitura e organização de PDF", cor: "#c5352b" },
-    App { id: "feathercad", sufixo: "CAD", descricao: "Desenho técnico 2D e 3D", cor: "#0f7184" },
-    App { id: "feathercode", sufixo: "Code", descricao: "Editor de código", cor: "#7048b8" },
+    App { id: "feathersheet", sufixo: "Sheet", descricao: "Planilhas e dados", etiquetas: &["Planilhas", "Tabela dinâmica", "OpenQuery", "Macros (JS)", "Gráficos"], cor: "#287846" },
+    App { id: "featherslide", sufixo: "Slide", descricao: "Apresentações", etiquetas: &["Slides", "Animações", "Temas", "Exportação"], cor: "#a87f0c" },
+    App { id: "featherdocs", sufixo: "Docs", descricao: "Documentos de texto", etiquetas: &["Documentos", "Markdown", "LaTeX", "Whiteboard", "DOCX"], cor: "#236ac7" },
+    App { id: "featherpdf", sufixo: "PDF", descricao: "Leitura e organização de PDF", etiquetas: &["Editar", "Anotações", "Formulários", "OCR"], cor: "#c5352b" },
+    App { id: "feathercad", sufixo: "CAD", descricao: "Desenho técnico 2D e 3D", etiquetas: &["CAD 2D", "DXF", "Vetores", "MCP (IA)"], cor: "#0f7184" },
+    App { id: "feathercode", sufixo: "Code", descricao: "Editor de código", etiquetas: &["IDE", "Ferramentas", "Integração", "Extensões"], cor: "#7048b8" },
 ];
 
 #[derive(Debug, Clone)]

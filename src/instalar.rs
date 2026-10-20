@@ -122,9 +122,13 @@ pub fn abrir(app: &App) -> Result<(), String> {
 /// Abre a pasta onde o app está no gerenciador de arquivos do sistema.
 pub fn mostrar_pasta(app: &App) -> Result<(), String> {
     let exe = executavel(app).ok_or("não encontrei o aplicativo instalado")?;
-    let pasta = exe.parent().unwrap_or(&exe);
+    abrir_externo(exe.parent().unwrap_or(&exe).as_os_str())
+}
+
+/// Página ou pasta no programa padrão do sistema (navegador, gerenciador de arquivos).
+pub fn abrir_externo(alvo: &std::ffi::OsStr) -> Result<(), String> {
     let abridor = if cfg!(windows) { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    Command::new(abridor).arg(pasta).spawn().map(|_| ()).map_err(|e| format!("não abriu a pasta: {e}"))
+    Command::new(abridor).arg(alvo).spawn().map(|_| ()).map_err(|e| format!("não abriu: {e}"))
 }
 
 /// O app veio de um pacote do sistema (.deb/.rpm): desinstalar pede a senha de administrador.

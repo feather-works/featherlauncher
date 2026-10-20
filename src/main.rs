@@ -378,8 +378,16 @@ impl Launcher {
 
     fn conteudo(&self) -> Element<'_, Msg> {
         let verificando = self.linhas.iter().any(|l| matches!(l.consulta, Consulta::Verificando));
-        let origem = if verificando { "Verificando…".to_string() } else { format!("Releases do GitHub ({})", releases::ORG) };
-        let titulo = row![text("Aplicativos da suíte").size(20).font(NEGRITO), text(origem).size(12).color(COR_TEXTO_MUTED())].spacing(12).align_y(Alignment::End);
+        let limite = self.linhas.iter().find_map(|l| match &l.consulta {
+            Consulta::Falhou(e) if e.starts_with(releases::LIMITE) => Some(e.clone()),
+            _ => None,
+        });
+        let (origem, cor) = match limite {
+            Some(e) => (format!("Consulta pausada: {e}"), hex(LARANJA)),
+            None if verificando => ("Verificando…".to_string(), COR_TEXTO_MUTED()),
+            None => (format!("Releases do GitHub ({})", releases::ORG), COR_TEXTO_MUTED()),
+        };
+        let titulo = row![text("Aplicativos da suíte").size(20).font(NEGRITO), text(origem).size(12).color(cor)].spacing(12).align_y(Alignment::End);
 
         let busca = self.busca.to_lowercase();
         let visiveis: Vec<usize> = (0..APPS.len())
@@ -424,7 +432,8 @@ impl Launcher {
         ]
         .spacing(3);
         let falha = match &l.consulta {
-            Consulta::Falhou(e) => Some(e),
+            // O limite do GitHub sai uma vez só, no título.
+            Consulta::Falhou(e) if !e.starts_with(releases::LIMITE) => Some(e),
             _ => None,
         };
         if let Some(e) = l.erro.as_ref().or(falha) {
@@ -472,6 +481,7 @@ impl Launcher {
             (Some(Download::Instalando), _) => ("Instalando…".into(), hex(AZUL)),
             (Some(Download::Desinstalando), _) => ("Desinstalando…".into(), hex(AZUL)),
             (None, Consulta::Verificando) if l.instalada.is_none() => ("Verificando…".into(), COR_TEXTO_MUTED()),
+            (None, Consulta::Falhou(e)) if l.instalada.is_none() && e.starts_with(releases::LIMITE) => ("Aguardando o GitHub".into(), COR_TEXTO_MUTED()),
             (None, Consulta::Falhou(_)) if l.instalada.is_none() => ("Sem conexão".into(), COR_ERRO()),
             _ if l.atualizacao().is_some() => ("Atualização disponível".into(), hex(LARANJA)),
             _ if l.instalada.is_some() => ("Instalado".into(), hex(VERDE)),

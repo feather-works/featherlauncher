@@ -2,6 +2,8 @@
 use feather_ui::marca::Produto;
 
 pub const ORG: &str = "feather-works";
+/// Começo da mensagem de cota estourada; a tela a reconhece por ele.
+pub const LIMITE: &str = "o GitHub limitou as consultas";
 
 pub struct App {
     pub id: &'static str,
@@ -94,7 +96,7 @@ pub async fn ultima(id: &'static str) -> Result<Option<Release>, String> {
             .and_then(|v| v.to_str().ok()?.parse::<u64>().ok())
             .and_then(|fim| fim.checked_sub(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs()))
             .map_or(String::new(), |s| format!(" em {} min", s.div_ceil(60)));
-        return Err(format!("o GitHub limitou as consultas por agora; tente de novo{minutos}"));
+        return Err(format!("{LIMITE} por agora; tente de novo{minutos}"));
     }
     if !status.is_success() {
         return Err(format!("GitHub respondeu {status}"));

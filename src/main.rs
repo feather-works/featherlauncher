@@ -14,6 +14,11 @@ use releases::{mais_nova, App, Release, APPS};
 const NEGRITO: Font = Font { weight: font::Weight::Semibold, ..Font::DEFAULT };
 const MONO: Font = Font::MONOSPACE;
 const LARGURA_MENU: f32 = 236.0;
+// Colunas da lista, iguais no cabeçalho e nas linhas.
+const COL_VERSAO: f32 = 160.0;
+const COL_ESTADO: f32 = 180.0;
+const COL_ACOES: f32 = 340.0;
+const LARGURA_BOTAO: f32 = 140.0;
 const LARANJA: &str = "#b45309";
 const VERDE: &str = "#287846";
 const AZUL: &str = "#1a56b8";
@@ -455,19 +460,20 @@ impl Launcher {
         .into()
     }
 
-    fn conteudo(&self) -> Element<'_, Msg> {
-        let verificando = self.linhas.iter().any(|l| matches!(l.consulta, Consulta::Verificando));
+    /// O que dizer da consulta no rodapé: verificando, ou a cota do GitHub estourada.
+    fn situacao(&self) -> Option<(String, Color)> {
         let limite = self.linhas.iter().find_map(|l| match &l.consulta {
             Consulta::Falhou(e) if e.starts_with(releases::LIMITE) => Some(e.clone()),
             _ => None,
         });
-        let (origem, cor) = match limite {
-            Some(e) => (format!("Consulta pausada: {e}"), tom(LARANJA)),
-            None if verificando => ("Verificando…".to_string(), COR_TEXTO_MUTED()),
-            None => (format!("Releases do GitHub ({})", releases::ORG), COR_TEXTO_MUTED()),
-        };
-        let titulo = row![text("Aplicativos da suíte").size(20).font(NEGRITO), text(origem).size(12).color(cor)].spacing(12).align_y(Alignment::End);
+        match limite {
+            Some(e) => Some((format!("Consulta pausada: {e}"), tom(LARANJA))),
+            None if self.linhas.iter().any(|l| matches!(l.consulta, Consulta::Verificando)) => Some(("Verificando…".into(), COR_TEXTO_MUTED())),
+            None => None,
+        }
+    }
 
+    fn conteudo(&self) -> Element<'_, Msg> {
         let busca = self.busca.to_lowercase();
         let visiveis: Vec<usize> = (0..APPS.len())
             .filter(|&i| self.passa(i, self.filtro) && (APPS[i].nome().to_lowercase().contains(&busca) || APPS[i].descricao.to_lowercase().contains(&busca)))
@@ -479,25 +485,31 @@ impl Launcher {
             } else {
                 visiveis.iter().fold(row![].spacing(16), |r, &i| r.push(self.cartao(i))).wrap().into()
             };
-            return self.rolagem(titulo, grade);
+            return self.rolagem(grade);
         }
         let cartao: Element<'_, Msg> = if visiveis.is_empty() {
             vazio().into()
         } else {
-            let mut lista = Column::new();
-            for (n, &i) in visiveis.iter().enumerate() {
-                if n > 0 {
-                    lista = lista.push(linha_fina(COR_BORDA_SUAVE()));
-                }
-                lista = lista.push(self.linha(i));
+            let cab = |s: &'static str| text(s).size(11).font(NEGRITO).color(COR_TEXTO_MUTED());
+            let cabecalho = row![
+                cab("APLICATIVO").width(Length::Fill),
+                cab("VERSÃO").width(COL_VERSAO),
+                cab("ESTADO").width(COL_ESTADO),
+                container(cab("AÇÕES")).width(COL_ACOES).align_x(Alignment::End),
+            ]
+            .spacing(16)
+            .padding([8, 16]);
+            let mut lista = column![cabecalho];
+            for &i in &visiveis {
+                lista = lista.push(linha_fina(COR_BORDA_SUAVE())).push(self.linha(i));
             }
             lista.into()
         };
-        self.rolagem(titulo, container(cartao).width(Length::Fill).style(estilo_cartao).into())
+        self.rolagem(container(cartao).width(Length::Fill).style(estilo_cartao).into())
     }
 
-    fn rolagem<'a>(&self, titulo: iced::widget::Row<'a, Msg>, corpo: Element<'a, Msg>) -> Element<'a, Msg> {
-        container(scrollable(column![titulo, corpo].spacing(14).padding(Padding { top: 28.0, right: 40.0, bottom: 20.0, left: 40.0 })))
+    fn rolagem<'a>(&self, corpo: Element<'a, Msg>) -> Element<'a, Msg> {
+        container(scrollable(container(corpo).padding(Padding { top: 16.0, right: 24.0, bottom: 16.0, left: 24.0 })))
             .width(Length::Fill)
             .height(Length::Fill)
             .style(|_| container::Style { background: Some(COR_FUNDO_JANELA().into()), text_color: Some(COR_TEXTO()), ..Default::default() })
@@ -507,14 +519,13 @@ impl Launcher {
     fn linha(&self, i: usize) -> Element<'_, Msg> {
         let (nome, col_versao) = self.partes(i);
         row![
-            logo(&APPS[i], self.linhas[i].em_breve()),
-            nome.width(Length::Fill),
-            col_versao.width(170),
-            container(self.estado(i)).width(190),
-            container(self.acoes(i)).width(300).align_x(Alignment::End),
+            row![logo(&APPS[i], self.linhas[i].em_breve(), 40.0), nome].spacing(12).align_y(Alignment::Center).width(Length::Fill),
+            col_versao.width(COL_VERSAO),
+            container(self.estado(i)).width(COL_ESTADO),
+            container(self.acoes(i)).width(COL_ACOES).align_x(Alignment::End),
         ]
-        .spacing(20)
-        .padding([18, 22])
+        .spacing(16)
+        .padding([10, 16])
         .align_y(Alignment::Center)
         .into()
     }
@@ -524,7 +535,7 @@ impl Launcher {
         let (nome, col_versao) = self.partes(i);
         container(
             column![
-                row![logo(&APPS[i], self.linhas[i].em_breve()), nome.width(Length::Fill)].spacing(14).align_y(Alignment::Center),
+                row![logo(&APPS[i], self.linhas[i].em_breve(), 48.0), nome.width(Length::Fill)].spacing(14).align_y(Alignment::Center),
                 row![col_versao, horizontal_space(), self.estado(i)].align_y(Alignment::Center),
                 container(self.acoes(i)).width(Length::Fill).height(36).align_x(Alignment::End).align_y(Alignment::Center),
             ]
@@ -545,8 +556,8 @@ impl Launcher {
 
         let mut nome = column![
             row![
-                text("Feather").size(17).font(NEGRITO).color(if apagado { COR_TEXTO_MUTED() } else { COR_TEXTO() }),
-                text(app.sufixo).size(17).font(NEGRITO).color(hex(app.cor)),
+                text("Feather").size(15).font(NEGRITO).color(if apagado { COR_TEXTO_MUTED() } else { COR_TEXTO() }),
+                text(app.sufixo).size(15).font(NEGRITO).color(hex(app.cor)),
             ],
             text(app.descricao).size(13).color(COR_TEXTO_MUTED()),
         ]
@@ -624,8 +635,9 @@ impl Launcher {
 
     fn acoes(&self, i: usize) -> Element<'_, Msg> {
         let l = &self.linhas[i];
-        let primario = |conteudo: Element<'static, Msg>, m| button(conteudo).on_press(m).style(tema::estilo_botao_primario).padding([9, 16]);
-        let secundario = |s: &str, m| button(text(s.to_string()).size(13)).on_press(m).style(tema::estilo_botao_secundario).padding([9, 16]);
+        // Todo botão de ação tem o mesmo tamanho; o "⋯" e os de download são quadrados de 36.
+        let primario = |conteudo: Element<'static, Msg>, m| button(container(conteudo).center(Length::Fill)).on_press(m).style(tema::estilo_botao_primario).width(LARGURA_BOTAO).height(36).padding(0);
+        let secundario = |s: &str, m| button(container(text(s.to_string()).size(13)).center(Length::Fill)).on_press(m).style(tema::estilo_botao_secundario).width(LARGURA_BOTAO).height(36).padding(0);
         let quadrado = |desenho: Element<'static, Msg>, m| button(container(desenho).center(Length::Fill)).on_press(m).width(36).height(36).padding(0).style(tema::estilo_botao_secundario);
         let barra = |baixado: u64, total: u64| {
             let pct = if total > 0 { baixado as f32 * 100.0 / total as f32 } else { 0.0 };
@@ -733,7 +745,10 @@ impl Launcher {
             container(
                 row![
                     row![ponto, muted(format!("Instalando para {} · {destino}", releases::nome_do_sistema()))].spacing(6).align_y(Alignment::Center),
-                    muted("Cada pacote é conferido pelo SHA256 da release".into()),
+                    match self.situacao() {
+                        Some((s, cor)) => text(s).size(12).color(cor),
+                        None => muted("Cada pacote é conferido pelo SHA256 da release".into()),
+                    },
                     horizontal_space(),
                     muted(format!("github.com/{}", releases::ORG)),
                     muted(format!("Launcher {}", env!("CARGO_PKG_VERSION"))),
@@ -762,10 +777,10 @@ fn traco(caminho: &str, tamanho: f32, cor: Color) -> svg::Svg<'static> {
 }
 
 /// A logo do app; quem não tem logo no `feather-ui` ganha a pena da suíte na cor dele.
-fn logo<'a>(app: &App, apagado: bool) -> Element<'a, Msg> {
+fn logo<'a>(app: &App, apagado: bool, tamanho: f32) -> Element<'a, Msg> {
     let desenho = match app.produto {
-        Some(p) => feather_ui::marca::icone_para(p, false, 52.0),
-        None => svg(svg::Handle::from_memory(pena_na_cor(app.cor).into_bytes())).width(52).height(52),
+        Some(p) => feather_ui::marca::icone_para(p, false, tamanho),
+        None => svg(svg::Handle::from_memory(pena_na_cor(app.cor).into_bytes())).width(tamanho).height(tamanho),
     };
     desenho.opacity(if apagado { 0.55_f32 } else { 1.0 }).into()
 }

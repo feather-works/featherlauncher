@@ -102,6 +102,11 @@ pub fn mostrar_pasta(app: &App) -> Result<(), String> {
     Command::new(abridor).arg(pasta).spawn().map(|_| ()).map_err(|e| format!("não abriu a pasta: {e}"))
 }
 
+/// O app veio de um pacote do sistema (.deb/.rpm): desinstalar pede a senha de administrador.
+pub fn pelo_sistema(app: &App) -> bool {
+    cfg!(all(unix, not(target_os = "macos"))) && executavel(app).is_some_and(|exe| !exe.starts_with(dirs::home_dir().unwrap_or_default()))
+}
+
 /// Tira o app do sistema e do registro do launcher. Os documentos e as
 /// configurações da pessoa ficam onde estão.
 pub fn desinstalar(app: &App) -> Result<(), String> {
@@ -116,11 +121,14 @@ pub fn desinstalar(app: &App) -> Result<(), String> {
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn desinstalar_em(app: &App, exe: &Path) -> Result<(), String> {
-    // Desfaz o instalar.sh; o que veio de .deb/.rpm é do gerenciador de pacotes.
     let local = dirs::home_dir().unwrap_or_default().join(".local");
     if !exe.starts_with(&local) {
-        return Err(format!("{} foi instalado pelo sistema; desinstale pelo gerenciador de pacotes", app.nome()));
+        // .deb/.rpm: o gerenciador de pacotes remove, e o pkexec pede a senha na janela do sistema.
+        let dpkg = Command::new("dpkg-query").args(["-W", app.id]).output().is_ok_and(|s| s.status.success());
+        let args = if dpkg { ["dpkg", "-r", app.id] } else { ["rpm", "-e", app.id] };
+        return rodar(Command::new("pkexec").args(args)).map_err(|_| format!("o pacote {} não foi removido (senha recusada ou cancelada)", app.id));
     }
+    // Desfaz o instalar.sh.
     fs::remove_file(exe).map_err(|e| format!("não apagou {}: {e}", exe.display()))?;
     let share = local.join("share");
     let _ = fs::remove_file(share.join("applications").join(format!("{}.desktop", app.id)));

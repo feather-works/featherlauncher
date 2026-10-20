@@ -324,7 +324,8 @@ impl Launcher {
 
         if let Some(i) = self.confirmar {
             let nome = APPS[i].nome();
-            let texto = text(format!("O {nome} sai deste computador. Suas planilhas, documentos e configurações não são apagados.")).size(13);
+            let senha = if instalar::pelo_sistema(&APPS[i]) { " Ele foi instalado como pacote do sistema, então o sistema vai pedir sua senha de administrador." } else { "" };
+            let texto = text(format!("O {nome} sai deste computador. Suas planilhas, documentos e configurações não são apagados.{senha}")).size(13);
             return Dialogo::new(format!("Desinstalar o {nome}?"), texto)
                 .icone("trash")
                 .ao_fechar(Msg::Esc)

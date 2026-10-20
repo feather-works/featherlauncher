@@ -7,9 +7,13 @@ use feather_ui::dialogo::Dialogo;
 use feather_ui::icones::icone;
 use feather_ui::tema::{self, COR_BORDA, COR_BORDA_SUAVE, COR_ERRO, COR_FUNDO_JANELA, COR_PAINEL, COR_TEXTO, COR_TEXTO_MUTED};
 use iced::widget::{button, column, container, horizontal_space, mouse_area, opaque, progress_bar, row, scrollable, stack, svg, text, text_input, Column, Space};
-use iced::{font, keyboard, window, Alignment, Border, Color, Element, Font, Length, Padding, Point, Size, Subscription, Task};
+use iced::{event, font, keyboard, mouse, window, Event, Alignment, Border, Color, Element, Font, Length, Padding, Point, Size, Subscription, Task};
 use instalar::Evento;
 use releases::{mais_nova, App, Release, APPS};
+use std::sync::{Mutex, PoisonError};
+
+/// Última posição do mouse na janela: o menu "⋯" abre onde foi o clique.
+static CURSOR: Mutex<Point> = Mutex::new(Point::ORIGIN);
 
 const NEGRITO: Font = Font { weight: font::Weight::Semibold, ..Font::DEFAULT };
 const MONO: Font = Font::MONOSPACE;
@@ -24,13 +28,16 @@ const VERDE: &str = "#287846";
 const AZUL: &str = "#1a56b8";
 
 fn main() -> iced::Result {
-    aplicar_tema(ler_preferencias().0);
+    let (tema, grade) = ler_preferencias();
+    aplicar_tema(tema);
     #[allow(unused_mut)]
     let mut janela = window::Settings {
         size: Size::new(1180.0, 720.0),
         min_size: Some(Size::new(960.0, 520.0)),
         // A barra de título é desenhada pelo app, como no FeatherSheet.
         decorations: false,
+        // Alt+F4 passa pelo `Msg::Fechar`, que não fecha no meio de uma instalação.
+        exit_on_close_request: false,
         ..Default::default()
     };
     #[cfg(target_os = "linux")]
@@ -41,7 +48,7 @@ fn main() -> iced::Result {
         .theme(|_| tema::tema_iced())
         .window(janela)
         .subscription(Launcher::subscription)
-        .run_with(Launcher::novo)
+        .run_with(move || Launcher::novo(tema, grade))
 }
 
 enum Consulta {
@@ -134,7 +141,8 @@ fn sistema_escuro() -> Option<bool> {
     }
     let saida = std::process::Command::new("gsettings").args(["get", "org.gnome.desktop.interface", "color-scheme"]).output().ok().filter(|s| s.status.success())?;
     let valor = String::from_utf8_lossy(&saida.stdout);
-    Some(valor.contains("dark"))
+    // Só `prefer-dark` diz algo; `default` e `prefer-light` ficam com a detecção do Iced.
+    valor.contains("prefer-dark").then_some(true)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -167,7 +175,7 @@ enum Msg {
     Configuracoes,
     Tema(Tema),
     Grade(bool),
-    Cursor(Point),
+    VersaoExterna(usize, Option<String>),
     Janela(Option<window::Id>),
     Tamanho(Size),
     Arrastar,
@@ -186,14 +194,15 @@ struct Launcher {
     configuracoes: bool,
     tema: Tema,
     grade: bool,
-    cursor: Point,
     tamanho: Size,
+    /// Tentou fechar no meio de uma instalação: o rodapé avisa.
+    fechar_bloqueado: bool,
     janela: Option<window::Id>,
     ultimo_clique_barra: Option<std::time::Instant>,
 }
 
 impl Launcher {
-    fn novo() -> (Self, Task<Msg>) {
+    fn novo(tema: Tema, grade: bool) -> (Self, Task<Msg>) {
         let mut l = Launcher {
             linhas: Vec::new(),
             filtro: Filtro::Todos,
@@ -201,10 +210,10 @@ impl Launcher {
             menu: None,
             confirmar: None,
             configuracoes: false,
-            tema: ler_preferencias().0,
-            grade: ler_preferencias().1,
-            cursor: Point::ORIGIN,
+            tema,
+            grade,
             tamanho: Size::new(1180.0, 720.0),
+            fechar_bloqueado: false,
             janela: None,
             ultimo_clique_barra: None,
         };
@@ -215,6 +224,14 @@ impl Launcher {
     fn subscription(&self) -> Subscription<Msg> {
         Subscription::batch([
             window::resize_events().map(|(_, s)| Msg::Tamanho(s)),
+            window::close_requests().map(|_| Msg::Fechar),
+            // Guarda o cursor sem gerar mensagem: um `on_move` refazia a tela a cada pixel.
+            event::listen_with(|e, _, _| {
+                if let Event::Mouse(mouse::Event::CursorMoved { position }) = e {
+                    *CURSOR.lock().unwrap_or_else(PoisonError::into_inner) = position;
+                }
+                None
+            }),
             keyboard::on_key_press(|k, _| matches!(k, keyboard::Key::Named(keyboard::key::Named::Escape)).then_some(Msg::Esc)),
         ])
     }
@@ -226,13 +243,18 @@ impl Launcher {
             .iter()
             .map(|app| Linha {
                 consulta: Consulta::Verificando,
-                instalada: registro.get(app.id).cloned().or_else(|| instalar::executavel(app).map(|exe| instalar::versao_externa(app, &exe).unwrap_or_else(|| "?".into()))),
+                // Instalado por fora: "?" até a versão chegar do `dpkg`/`rpm` (ver abaixo).
+                instalada: registro.get(app.id).cloned().or_else(|| instalar::executavel(app).map(|_| "?".into())),
                 // Download em andamento sobrevive ao "Verificar".
                 download: antigas.next().and_then(|a| a.download),
                 erro: None,
             })
             .collect();
-        Task::batch(APPS.iter().enumerate().map(|(i, app)| Task::perform(releases::ultima(app.id), move |r| Msg::Release(i, r))))
+        let externas = APPS.iter().enumerate().filter(|&(_, app)| !registro.contains_key(app.id)).map(|(i, app)| {
+            let versao = async move { tokio::task::spawn_blocking(move || instalar::executavel(app).and_then(|exe| instalar::versao_externa(app, &exe))).await.ok().flatten() };
+            Task::perform(versao, move |v| Msg::VersaoExterna(i, v))
+        });
+        Task::batch(APPS.iter().enumerate().map(|(i, app)| Task::perform(releases::ultima(app.id), move |r| Msg::Release(i, r))).chain(externas))
     }
 
     fn instalar(&mut self, i: usize) -> Task<Msg> {
@@ -300,14 +322,14 @@ impl Launcher {
                     alca.abort();
                 }
                 linha.download = None;
-                if let Some(p) = linha.release().and_then(|r| r.pacote.as_ref()) {
-                    let _ = std::fs::remove_file(instalar::parcial(p));
+                if let Some((p, rel_versao)) = linha.release().and_then(|r| Some((r.pacote.as_ref()?, r.versao.clone()))) {
+                    let _ = std::fs::remove_file(instalar::parcial(p, &rel_versao));
                 }
             }
             Msg::Abrir(i) => self.linhas[i].erro = instalar::abrir(&APPS[i]).err(),
             Msg::Filtrar(f) => self.filtro = f,
             Msg::Buscar(s) => self.busca = s,
-            Msg::Menu(i) => self.menu = if self.menu.is_some_and(|(m, _)| m == i) { None } else { Some((i, self.cursor)) },
+            Msg::Menu(i) => self.menu = if self.menu.is_some_and(|(m, _)| m == i) { None } else { Some((i, *CURSOR.lock().unwrap_or_else(PoisonError::into_inner))) },
             Msg::FecharMenu => self.menu = None,
             Msg::MostrarPasta(i) => {
                 self.menu = None;
@@ -351,7 +373,12 @@ impl Launcher {
                 self.grade = g;
                 guardar_preferencias(self.tema, g);
             }
-            Msg::Cursor(p) => self.cursor = p,
+            Msg::VersaoExterna(i, v) => {
+                let linha = &mut self.linhas[i];
+                if linha.instalada.as_deref() == Some("?") {
+                    linha.instalada = v.or(linha.instalada.take());
+                }
+            }
             Msg::Janela(id) => self.janela = id,
             Msg::Tamanho(s) => self.tamanho = s,
             Msg::Arrastar => {
@@ -360,7 +387,14 @@ impl Launcher {
             }
             Msg::Minimizar => return self.com_janela(|id| window::minimize(id, true)),
             Msg::Maximizar => return self.com_janela(window::toggle_maximize),
-            Msg::Fechar => return self.com_janela(window::close),
+            Msg::Fechar => {
+                // Fechar no meio mata a cópia dos arquivos e deixa o app pela metade.
+                if self.linhas.iter().any(|l| matches!(l.download, Some(Download::Instalando | Download::Desinstalando))) {
+                    self.fechar_bloqueado = true;
+                    return Task::none();
+                }
+                return self.com_janela(window::close);
+            }
         }
         Task::none()
     }
@@ -399,7 +433,7 @@ impl Launcher {
         let barra = cromo::barra_integrada(nome.into(), cromo::AcoesJanela { arrastar: Msg::Arrastar, minimizar: Msg::Minimizar, maximizar: Msg::Maximizar, fechar: Msg::Fechar });
 
         let corpo = column![barra, self.faixa(), self.conteudo(), self.rodape()];
-        let base = cromo::moldura_janela(mouse_area(corpo).on_move(Msg::Cursor).into());
+        let base = cromo::moldura_janela(corpo.into());
 
         if self.configuracoes {
             return self.janela_configuracoes(base);
@@ -466,6 +500,10 @@ impl Launcher {
             Consulta::Falhou(e) if e.starts_with(releases::LIMITE) => Some(e.clone()),
             _ => None,
         });
+        let ocupado = self.linhas.iter().any(|l| matches!(l.download, Some(Download::Instalando | Download::Desinstalando)));
+        if self.fechar_bloqueado && ocupado {
+            return Some(("Espere terminar a instalação para fechar".into(), tom(LARANJA)));
+        }
         match limite {
             Some(e) => Some((format!("Consulta pausada: {e}"), tom(LARANJA))),
             None if self.linhas.iter().any(|l| matches!(l.consulta, Consulta::Verificando)) => Some(("Verificando…".into(), COR_TEXTO_MUTED())),
@@ -723,12 +761,11 @@ impl Launcher {
         let opcoes = Tema::TODOS.iter().fold(row![].spacing(4), |r, &(t, _, rotulo)| {
             r.push(button(text(rotulo).size(13)).on_press(Msg::Tema(t)).padding([6, 14]).style(tema::estilo_aba_faixa(self.tema == t)))
         });
-        let destino = if cfg!(windows) { "%LOCALAPPDATA%\\Programs" } else if cfg!(target_os = "macos") { "~/Applications" } else { "~/.local" };
         let corpo = column![
             feather_ui::dialogo::secao("Aparência"),
             row![text("Tema").size(13).width(120), opcoes].align_y(Alignment::Center),
             feather_ui::dialogo::secao("Instalação"),
-            feather_ui::dialogo::linha_rotulo_valor("Pasta", destino),
+            feather_ui::dialogo::linha_rotulo_valor("Pasta", instalar::destino()),
             feather_ui::dialogo::linha_rotulo_valor("Versões de", format!("github.com/{}", releases::ORG)),
             feather_ui::dialogo::linha_rotulo_valor("Launcher", env!("CARGO_PKG_VERSION")),
         ]
@@ -737,14 +774,13 @@ impl Launcher {
     }
 
     fn rodape(&self) -> Element<'_, Msg> {
-        let destino = if cfg!(windows) { "%LOCALAPPDATA%\\Programs" } else if cfg!(target_os = "macos") { "~/Applications" } else { "~/.local" };
         let ponto = container(Space::new(7, 7)).style(|_| container::Style { background: Some(hex(VERDE).into()), border: Border { radius: 4.0.into(), ..Default::default() }, ..Default::default() });
         let muted = |s: String| text(s).size(12).color(COR_TEXTO_MUTED());
         column![
             linha_fina(COR_BORDA()),
             container(
                 row![
-                    row![ponto, muted(format!("Instalando para {} · {destino}", releases::nome_do_sistema()))].spacing(6).align_y(Alignment::Center),
+                    row![ponto, muted(format!("Instalando para {} · {}", releases::nome_do_sistema(), instalar::destino()))].spacing(6).align_y(Alignment::Center),
                     match self.situacao() {
                         Some((s, cor)) => text(s).size(12).color(cor),
                         None => muted("Cada pacote é conferido pelo SHA256 da release".into()),

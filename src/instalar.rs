@@ -9,6 +9,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, PoisonError};
 
 #[derive(Debug, Clone)]
 pub enum Evento {
@@ -26,24 +27,39 @@ fn pasta_downloads() -> PathBuf {
     dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("featherworks")
 }
 
-/// O arquivo baixado pela metade fica aqui; é dele que a pausa continua.
-pub fn parcial(pacote: &Arquivo) -> PathBuf {
-    pasta_downloads().join(format!("{}.parcial", pacote.nome))
+/// Onde os apps vão parar, como a tela mostra.
+pub fn destino() -> &'static str {
+    if cfg!(windows) { "%LOCALAPPDATA%\\Programs" } else if cfg!(target_os = "macos") { "~/Applications" } else { "~/.local" }
+}
+
+/// O arquivo baixado pela metade fica aqui; é dele que a pausa continua. A versão
+/// vai no nome porque o pacote não a tem: o resto da 0.1.0 não emenda na 0.1.1.
+pub fn parcial(pacote: &Arquivo, versao: &str) -> PathBuf {
+    pasta_downloads().join(format!("{versao}-{}.parcial", pacote.nome))
 }
 
 /// Versões instaladas pelo launcher: `{"feathersheet": "0.1.3"}`.
 pub fn instalados() -> HashMap<String, String> {
-    fs::read(pasta_dados().join("instalados.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    ler_instalados(&pasta_dados())
 }
 
-fn registrar(id: &str, versao: &str) -> Result<(), String> {
-    let mut mapa = instalados();
-    mapa.insert(id.into(), versao.into());
-    fs::create_dir_all(pasta_dados()).map_err(|e| e.to_string())?;
-    fs::write(pasta_dados().join("instalados.json"), serde_json::to_vec_pretty(&mapa).unwrap()).map_err(|e| e.to_string())
+fn ler_instalados(pasta: &Path) -> HashMap<String, String> {
+    fs::read(pasta.join("instalados.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+/// "Atualizar tudo" instala em paralelo: sem a trava, duas instalações que acabam
+/// juntas leem o mesmo registro e a segunda gravação apaga a linha da primeira.
+static REGISTRO: Mutex<()> = Mutex::new(());
+
+fn alterar_instalados(pasta: &Path, mudar: impl FnOnce(&mut HashMap<String, String>)) -> Result<(), String> {
+    let _trava = REGISTRO.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut mapa = ler_instalados(pasta);
+    mudar(&mut mapa);
+    fs::create_dir_all(pasta).map_err(|e| e.to_string())?;
+    // Grava ao lado e renomeia: uma queda no meio não deixa o registro pela metade.
+    let tmp = pasta.join("instalados.json.tmp");
+    fs::write(&tmp, serde_json::to_vec_pretty(&mapa).unwrap()).map_err(|e| e.to_string())?;
+    fs::rename(&tmp, pasta.join("instalados.json")).map_err(|e| e.to_string())
 }
 
 /// Onde o app instalado está (pelo launcher, pelo `instalar.sh`, pelo `.deb` ou pelo instalador do Windows).
@@ -112,11 +128,9 @@ pub fn pelo_sistema(app: &App) -> bool {
 pub fn desinstalar(app: &App) -> Result<(), String> {
     let exe = executavel(app).ok_or("não encontrei o aplicativo instalado")?;
     desinstalar_em(app, &exe)?;
-    let mut mapa = instalados();
-    if mapa.remove(app.id).is_some() {
-        fs::write(pasta_dados().join("instalados.json"), serde_json::to_vec_pretty(&mapa).unwrap()).map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    alterar_instalados(&pasta_dados(), |mapa| {
+        mapa.remove(app.id);
+    })
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -163,7 +177,7 @@ pub fn baixar_e_instalar(app: &'static App, rel: Release) -> impl Stream<Item = 
 async fn executar(app: &'static App, rel: &Release, saida: &mut Sender<Evento>) -> Result<(), String> {
     let pacote = rel.pacote.clone().ok_or("esta versão não tem pacote para este sistema")?;
     let esperado = soma_esperada(rel, &pacote.nome).await?;
-    let arquivo = parcial(&pacote);
+    let arquivo = parcial(&pacote, &rel.versao);
     fs::create_dir_all(pasta_downloads()).map_err(|e| e.to_string())?;
     baixar(&pacote, &arquivo, saida).await?;
     let _ = saida.send(Evento::Instalando).await;
@@ -176,7 +190,9 @@ async fn executar(app: &'static App, rel: &Release, saida: &mut Sender<Evento>) 
         }
         instalar(app, &arquivo)?;
         let _ = fs::remove_file(&arquivo);
-        registrar(app.id, &versao)
+        alterar_instalados(&pasta_dados(), |mapa| {
+            mapa.insert(app.id.into(), versao);
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -293,6 +309,20 @@ fn instalar_em(app: &App, pacote: &Path, tmp: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod testes {
     use super::*;
+
+    #[test]
+    fn instalacoes_em_paralelo_nao_apagam_umas_as_outras() {
+        let pasta = std::env::temp_dir().join(format!("featherlauncher-teste-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&pasta);
+        std::thread::scope(|s| {
+            for n in 0..8 {
+                let pasta = &pasta;
+                s.spawn(move || alterar_instalados(pasta, |m| { m.insert(format!("app{n}"), "1.0".into()); }).unwrap());
+            }
+        });
+        assert_eq!(ler_instalados(&pasta).len(), 8);
+        let _ = fs::remove_dir_all(&pasta);
+    }
 
     #[test]
     fn limpa_a_versao_do_pacote() {

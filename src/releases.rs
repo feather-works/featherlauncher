@@ -56,11 +56,10 @@ pub fn nome_do_sistema() -> &'static str {
     if cfg!(windows) { "Windows" } else if cfg!(target_os = "macos") { "macOS" } else { "Linux" }
 }
 
-pub fn cliente() -> reqwest::Client {
-    reqwest::Client::builder()
-        .user_agent(concat!("featherlauncher/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .expect("cliente HTTP")
+/// Um cliente só para o app inteiro: reaproveita as conexões e a configuração do TLS.
+pub fn cliente() -> &'static reqwest::Client {
+    static CLIENTE: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENTE.get_or_init(|| reqwest::Client::builder().user_agent(concat!("featherlauncher/", env!("CARGO_PKG_VERSION"))).build().expect("cliente HTTP"))
 }
 
 /// `Ok(None)` = o app ainda não tem release (ou nem repositório).
@@ -193,13 +192,51 @@ fn ler_release(json: &serde_json::Value) -> Release {
     }
 }
 
-/// "2026-10-19T15:13:46Z" → "19/10/2026".
+/// "2026-10-20T00:23:34Z" (UTC) → "19/10/2026" no fuso desta máquina.
 fn data_br(iso: &str) -> String {
-    let d: Vec<&str> = iso.get(..10).unwrap_or_default().split('-').collect();
-    match d[..] {
-        [a, m, dia] => format!("{dia}/{m}/{a}"),
-        _ => "—".into(),
-    }
+    data_no_fuso(iso, fuso_local_min())
+}
+
+fn data_no_fuso(iso: &str, fuso_min: i64) -> String {
+    let n = |a: usize, b: usize| iso.get(a..b)?.parse::<i64>().ok();
+    let (Some(ano), Some(mes), Some(dia)) = (n(0, 4), n(5, 7), n(8, 10)) else { return "—".into() };
+    let minutos = dias_desde_1970(ano, mes, dia) * 1440 + n(11, 13).unwrap_or(0) * 60 + n(14, 16).unwrap_or(0) + fuso_min;
+    let (a, m, d) = data_civil(minutos.div_euclid(1440));
+    format!("{d:02}/{m:02}/{a}")
+}
+
+/// O fuso desta máquina em minutos, pelo `date +%z` ("-0300" → -180).
+// shortcut: no Windows não há `date +%z` e a data fica em UTC; trocar por GetTimeZoneInformation se pesar.
+fn fuso_local_min() -> i64 {
+    static FUSO: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+    *FUSO.get_or_init(|| {
+        let saida = std::process::Command::new("date").arg("+%z").output().ok();
+        let z = saida.map(|s| String::from_utf8_lossy(&s.stdout).trim().to_string()).unwrap_or_default();
+        let sinal = if z.starts_with('-') { -1 } else { 1 };
+        let n = |a: usize, b: usize| z.get(a..b).and_then(|v| v.parse::<i64>().ok());
+        n(1, 3).zip(n(3, 5)).map_or(0, |(h, m)| sinal * (h * 60 + m))
+    })
+}
+
+// Conversões de dia civil de Howard Hinnant (o mesmo cálculo do `chrono`).
+fn dias_desde_1970(a: i64, m: i64, d: i64) -> i64 {
+    let a = if m <= 2 { a - 1 } else { a };
+    let era = a.div_euclid(400);
+    let ano_era = a - era * 400;
+    let dia_ano = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    era * 146_097 + ano_era * 365 + ano_era / 4 - ano_era / 100 + dia_ano - 719_468
+}
+
+fn data_civil(dias: i64) -> (i64, i64, i64) {
+    let z = dias + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let ano_era = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let dia_ano = doe - (365 * ano_era + ano_era / 4 - ano_era / 100);
+    let mp = (5 * dia_ano + 2) / 153;
+    let d = dia_ano - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (ano_era + era * 400 + i64::from(m <= 2), m, d)
 }
 
 /// `a` é mais nova que `b`? Compara número a número ("0.10.0" > "0.9.1").
@@ -211,6 +248,15 @@ pub fn mais_nova(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod testes {
     use super::*;
+
+    #[test]
+    fn data_no_fuso_de_brasilia() {
+        assert_eq!(data_no_fuso("2026-10-20T00:23:34Z", -180), "19/10/2026");
+        assert_eq!(data_no_fuso("2026-10-19T15:13:46Z", -180), "19/10/2026");
+        assert_eq!(data_no_fuso("2026-01-01T01:00:00Z", -180), "31/12/2025");
+        assert_eq!(data_no_fuso("2024-02-29T12:00:00Z", 0), "29/02/2024");
+        assert_eq!(data_no_fuso("", 0), "—");
+    }
 
     #[test]
     fn compara_versoes_por_numero() {

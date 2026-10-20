@@ -3,7 +3,6 @@ mod instalar;
 mod releases;
 
 use feather_ui::cromo;
-use feather_ui::dialogo::Dialogo;
 use feather_ui::icones::icone;
 use feather_ui::tema::{self, COR_BORDA, COR_BORDA_SUAVE, COR_ERRO, COR_FUNDO_JANELA, COR_PAINEL, COR_TEXTO, COR_TEXTO_MUTED};
 use iced::widget::{button, column, container, horizontal_space, mouse_area, opaque, progress_bar, row, scrollable, stack, svg, text, text_input, Column, Space};
@@ -322,17 +321,6 @@ impl Launcher {
         let corpo = column![barra, self.faixa(), self.conteudo(), self.rodape()];
         let base = cromo::moldura_janela(mouse_area(corpo).on_move(Msg::Cursor).into());
 
-        if let Some(i) = self.confirmar {
-            let nome = APPS[i].nome();
-            let senha = if instalar::pelo_sistema(&APPS[i]) { " Ele foi instalado como pacote do sistema, então o sistema vai pedir sua senha de administrador." } else { "" };
-            let texto = text(format!("O {nome} sai deste computador. Suas planilhas, documentos e configurações não são apagados.{senha}")).size(13);
-            return Dialogo::new(format!("Desinstalar o {nome}?"), texto)
-                .icone("trash")
-                .ao_fechar(Msg::Esc)
-                .secundario("Cancelar", Some(Msg::Esc))
-                .primario("Desinstalar", Some(Msg::Desinstalar(i)))
-                .sobre(base);
-        }
         match self.menu {
             Some((i, onde)) => stack![base, self.menu_mais(i, onde)].into(),
             None => base,
@@ -442,6 +430,9 @@ impl Launcher {
         if let Some(e) = l.erro.as_ref().or(falha) {
             nome = nome.push(text(e).size(12).color(COR_ERRO()));
         }
+        if self.confirmar == Some(i) && instalar::pelo_sistema(app) {
+            nome = nome.push(text("Instalado como pacote do sistema: o sistema vai pedir sua senha.").size(12).color(COR_TEXTO_MUTED()));
+        }
 
         let versao: Element<'_, Msg> = match (l.atualizacao(), l.instalada.as_deref(), rel) {
             (Some(r), Some(inst), _) => row![
@@ -529,6 +520,15 @@ impl Launcher {
             }
             Some(Download::Instalando) => aviso("Conferindo o SHA256 e instalando…"),
             Some(Download::Desinstalando) => aviso("Removendo do computador…"),
+            None if self.confirmar == Some(i) => {
+                let perigo = button(text("Desinstalar").size(13).font(NEGRITO)).on_press(Msg::Desinstalar(i)).padding([9, 16]).style(|_, st| button::Style {
+                    background: Some(if matches!(st, button::Status::Hovered | button::Status::Pressed) { hex("#a50e0e") } else { hex("#c5221f") }.into()),
+                    text_color: Color::WHITE,
+                    border: Border { radius: 6.0.into(), ..Default::default() },
+                    ..Default::default()
+                });
+                row![text("Tem certeza?").size(13), secundario("Cancelar", Msg::Esc), perigo]
+            }
             None => {
                 let mais = quadrado(traco(ICONE_MAIS, 16.0, COR_TEXTO()).into(), Msg::Menu(i));
                 match (l.atualizacao(), l.instalada.is_some(), l.instalavel()) {

@@ -19,7 +19,7 @@ const VERDE: &str = "#287846";
 const AZUL: &str = "#1a56b8";
 
 fn main() -> iced::Result {
-    aplicar_tema(ler_tema());
+    aplicar_tema(ler_preferencias().0);
     #[allow(unused_mut)]
     let mut janela = window::Settings {
         size: Size::new(1180.0, 720.0),
@@ -100,20 +100,36 @@ fn arquivo_preferencias() -> std::path::PathBuf {
     dirs::config_dir().unwrap_or_else(std::env::temp_dir).join("featherworks/launcher.json")
 }
 
-fn ler_tema() -> Tema {
+/// Tema e modo de exibição (`true` = grade).
+fn ler_preferencias() -> (Tema, bool) {
     let json: serde_json::Value = std::fs::read(arquivo_preferencias()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-    Tema::TODOS.iter().find(|t| json["tema"] == t.1).map_or(Tema::Automatico, |t| t.0)
+    (Tema::TODOS.iter().find(|t| json["tema"] == t.1).map_or(Tema::Automatico, |t| t.0), json["modo"] == "grade")
 }
 
-fn guardar_tema(t: Tema) {
+fn guardar_preferencias(t: Tema, grade: bool) {
     let caminho = arquivo_preferencias();
     let nome = Tema::TODOS.iter().find(|x| x.0 == t).map_or("automatico", |x| x.1);
     let _ = std::fs::create_dir_all(caminho.parent().unwrap());
-    let _ = std::fs::write(caminho, serde_json::json!({ "tema": nome }).to_string());
+    let _ = std::fs::write(caminho, serde_json::json!({ "tema": nome, "modo": if grade { "grade" } else { "lista" } }).to_string());
 }
 
 fn aplicar_tema(t: Tema) {
-    tema::definir_tema(tema::escuro_resolvido(t == Tema::Automatico, t == Tema::Escuro), 0);
+    let escuro = match t {
+        Tema::Automatico => sistema_escuro().unwrap_or_else(|| tema::escuro_resolvido(true, false)),
+        t => t == Tema::Escuro,
+    };
+    tema::definir_tema(escuro, 0);
+}
+
+/// O GNOME guarda o modo escuro em `color-scheme`, que a detecção do Iced não lê
+/// (ela via claro com o sistema em `prefer-dark`). Fora do GNOME: `None`.
+fn sistema_escuro() -> Option<bool> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let saida = std::process::Command::new("gsettings").args(["get", "org.gnome.desktop.interface", "color-scheme"]).output().ok().filter(|s| s.status.success())?;
+    let valor = String::from_utf8_lossy(&saida.stdout);
+    Some(valor.contains("dark"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -145,6 +161,7 @@ enum Msg {
     Esc,
     Configuracoes,
     Tema(Tema),
+    Grade(bool),
     Cursor(Point),
     Janela(Option<window::Id>),
     Tamanho(Size),
@@ -163,6 +180,7 @@ struct Launcher {
     confirmar: Option<usize>,
     configuracoes: bool,
     tema: Tema,
+    grade: bool,
     cursor: Point,
     tamanho: Size,
     janela: Option<window::Id>,
@@ -178,7 +196,8 @@ impl Launcher {
             menu: None,
             confirmar: None,
             configuracoes: false,
-            tema: ler_tema(),
+            tema: ler_preferencias().0,
+            grade: ler_preferencias().1,
             cursor: Point::ORIGIN,
             tamanho: Size::new(1180.0, 720.0),
             janela: None,
@@ -321,7 +340,11 @@ impl Launcher {
             Msg::Tema(t) => {
                 self.tema = t;
                 aplicar_tema(t);
-                guardar_tema(t);
+                guardar_preferencias(t, self.grade);
+            }
+            Msg::Grade(g) => {
+                self.grade = g;
+                guardar_preferencias(self.tema, g);
             }
             Msg::Cursor(p) => self.cursor = p,
             Msg::Janela(id) => self.janela = id,
@@ -416,6 +439,7 @@ impl Launcher {
             aba("Atualizações", Filtro::Atualizacoes),
             aba("Não instalados", Filtro::NaoInstalados),
             horizontal_space(),
+            self.alternar_modo(),
             busca,
             button(row![icone("refresh", 15.0), text("Verificar").size(13)].spacing(6).align_y(Alignment::Center)).on_press(Msg::Verificar).style(tema::estilo_botao_secundario).padding([6, 12]),
         ]
@@ -448,8 +472,17 @@ impl Launcher {
         let visiveis: Vec<usize> = (0..APPS.len())
             .filter(|&i| self.passa(i, self.filtro) && (APPS[i].nome().to_lowercase().contains(&busca) || APPS[i].descricao.to_lowercase().contains(&busca)))
             .collect();
+        let vazio = || container(text("Nenhum aplicativo neste filtro.").size(13).color(COR_TEXTO_MUTED())).padding(22);
+        if self.grade {
+            let grade: Element<'_, Msg> = if visiveis.is_empty() {
+                vazio().style(estilo_cartao).width(Length::Fill).into()
+            } else {
+                visiveis.iter().fold(row![].spacing(16), |r, &i| r.push(self.cartao(i))).wrap().into()
+            };
+            return self.rolagem(titulo, grade);
+        }
         let cartao: Element<'_, Msg> = if visiveis.is_empty() {
-            container(text("Nenhum aplicativo neste filtro.").size(13).color(COR_TEXTO_MUTED())).padding(22).into()
+            vazio().into()
         } else {
             let mut lista = Column::new();
             for (n, &i) in visiveis.iter().enumerate() {
@@ -460,12 +493,11 @@ impl Launcher {
             }
             lista.into()
         };
-        let cartao = container(cartao).width(Length::Fill).style(|_| container::Style {
-            background: Some(COR_PAINEL().into()),
-            border: Border { color: COR_BORDA(), width: 1.0, radius: 10.0.into() },
-            ..Default::default()
-        });
-        container(scrollable(column![titulo, cartao].spacing(14).padding(Padding { top: 28.0, right: 40.0, bottom: 20.0, left: 40.0 })))
+        self.rolagem(titulo, container(cartao).width(Length::Fill).style(estilo_cartao).into())
+    }
+
+    fn rolagem<'a>(&self, titulo: iced::widget::Row<'a, Msg>, corpo: Element<'a, Msg>) -> Element<'a, Msg> {
+        container(scrollable(column![titulo, corpo].spacing(14).padding(Padding { top: 28.0, right: 40.0, bottom: 20.0, left: 40.0 })))
             .width(Length::Fill)
             .height(Length::Fill)
             .style(|_| container::Style { background: Some(COR_FUNDO_JANELA().into()), text_color: Some(COR_TEXTO()), ..Default::default() })
@@ -473,6 +505,39 @@ impl Launcher {
     }
 
     fn linha(&self, i: usize) -> Element<'_, Msg> {
+        let (nome, col_versao) = self.partes(i);
+        row![
+            logo(&APPS[i], self.linhas[i].em_breve()),
+            nome.width(Length::Fill),
+            col_versao.width(170),
+            container(self.estado(i)).width(190),
+            container(self.acoes(i)).width(300).align_x(Alignment::End),
+        ]
+        .spacing(20)
+        .padding([18, 22])
+        .align_y(Alignment::Center)
+        .into()
+    }
+
+    /// O app no modo grade: o mesmo conteúdo da linha, empilhado num cartão.
+    fn cartao(&self, i: usize) -> Element<'_, Msg> {
+        let (nome, col_versao) = self.partes(i);
+        container(
+            column![
+                row![logo(&APPS[i], self.linhas[i].em_breve()), nome.width(Length::Fill)].spacing(14).align_y(Alignment::Center),
+                row![col_versao, horizontal_space(), self.estado(i)].align_y(Alignment::Center),
+                container(self.acoes(i)).width(Length::Fill).height(36).align_x(Alignment::End).align_y(Alignment::Center),
+            ]
+            .spacing(16),
+        )
+        .padding(20)
+        .width(340)
+        .style(estilo_cartao)
+        .into()
+    }
+
+    /// Nome com descrição e avisos, e a coluna da versão: comuns à linha e ao cartão.
+    fn partes(&self, i: usize) -> (Column<'_, Msg>, Column<'_, Msg>) {
         let app = &APPS[i];
         let l = &self.linhas[i];
         let rel = l.release();
@@ -514,18 +579,18 @@ impl Launcher {
         if let Some(r) = rel.filter(|r| r.data != "—") {
             col_versao = col_versao.push(text(format!("Lançada em {}", r.data)).size(12).color(COR_TEXTO_MUTED()));
         }
+        (nome, col_versao)
+    }
 
-        row![
-            logo(app, apagado),
-            nome.width(Length::Fill),
-            col_versao.width(170),
-            container(self.estado(i)).width(190),
-            container(self.acoes(i)).width(300).align_x(Alignment::End),
-        ]
-        .spacing(20)
-        .padding([18, 22])
-        .align_y(Alignment::Center)
-        .into()
+    fn alternar_modo(&self) -> Element<'_, Msg> {
+        let botao = |nome: &str, dica: &str, grade: bool| {
+            iced::widget::tooltip(
+                button(icone(nome, 16.0)).on_press(Msg::Grade(grade)).padding([6, 8]).style(tema::estilo_aba_faixa(self.grade == grade)),
+                container(text(dica.to_string()).size(12)).padding([4, 8]).style(tema::estilo_dica),
+                iced::widget::tooltip::Position::Bottom,
+            )
+        };
+        row![botao("list", "Lista", false), botao("layout-grid", "Grade", true)].spacing(2).padding(iced::Padding { right: 8.0, ..Default::default() }).into()
     }
 
     fn estado(&self, i: usize) -> Element<'_, Msg> {
@@ -718,6 +783,10 @@ fn pena_na_cor(cor: &str) -> String {
         .replace("#f4faf5", &claro(0.95))
         .replace("#e8f4eb", &claro(0.88))
         .replace("#e4f0e7", &claro(0.85))
+}
+
+fn estilo_cartao(_: &iced::Theme) -> container::Style {
+    container::Style { background: Some(COR_PAINEL().into()), border: Border { color: COR_BORDA(), width: 1.0, radius: 10.0.into() }, ..Default::default() }
 }
 
 fn selo_em_breve<'a>() -> Element<'a, Msg> {

@@ -112,20 +112,28 @@ pub async fn ultima(id: &'static str) -> Result<Option<Release>, String> {
     Ok(Some(ler_release(&json)))
 }
 
-/// O caminho sem cota (o mesmo do craft-launcher): o redirecionamento de
-/// `releases/latest` diz a tag, e o `SHA256SUMS` dela lista os arquivos. Não traz
-/// tamanho nem data; o tamanho chega com o download.
+/// O caminho sem cota: o feed `releases.atom` diz a tag mais nova e o `SHA256SUMS`
+/// dela lista os arquivos. (O redirecionamento de `releases/latest` fica minutos
+/// em cache depois de uma release nova; o feed não.) Não traz tamanho nem data;
+/// o tamanho chega com o download.
 async fn pelas_paginas(id: &str) -> Result<Option<Release>, String> {
-    let resp = cliente().get(format!("https://github.com/{ORG}/{id}/releases/latest")).send().await.map_err(|e| e.to_string())?;
+    let resp = cliente().get(format!("https://github.com/{ORG}/{id}/releases.atom")).send().await.map_err(|e| e.to_string())?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
     }
-    // Sem release, o github.com manda para a lista de releases em vez de uma tag.
-    let Some(tag) = resp.url().path().split("/releases/tag/").nth(1).map(str::to_string) else { return Ok(None) };
+    let feed = resp.text().await.map_err(|e| e.to_string())?;
+    let Some(tag) = tag_do_feed(&feed) else { return Ok(None) };
     let base = format!("https://github.com/{ORG}/{id}/releases/download/{tag}/");
     let resp = cliente().get(format!("{base}SHA256SUMS")).send().await.map_err(|e| e.to_string())?;
     let somas = if resp.status().is_success() { resp.text().await.map_err(|e| e.to_string())? } else { String::new() };
     Ok(Some(release_das_somas(&tag, &base, &somas)))
+}
+
+/// A primeira entrada do feed é a release mais nova.
+fn tag_do_feed(feed: &str) -> Option<String> {
+    let entrada = &feed[feed.find("<entry>")?..];
+    let resto = &entrada[entrada.find("/releases/tag/")? + "/releases/tag/".len()..];
+    Some(resto[..resto.find(['"', '<'])?].to_string())
 }
 
 fn release_das_somas(tag: &str, base: &str, somas: &str) -> Release {
@@ -198,6 +206,13 @@ mod testes {
         assert!(mais_nova("0.10.0", "0.9.1"));
         assert!(mais_nova("0.1.4", "0.1.3"));
         assert!(!mais_nova("0.1.3", "0.1.3"));
+    }
+
+    #[test]
+    fn acha_a_tag_no_feed() {
+        let feed = r#"<feed><link href="https://github.com/x/y/releases"/><entry><link rel="alternate" type="text/html" href="https://github.com/x/y/releases/tag/v0.2.0"/></entry><entry><link href="https://github.com/x/y/releases/tag/v0.1.0"/></entry></feed>"#;
+        assert_eq!(tag_do_feed(feed).as_deref(), Some("v0.2.0"));
+        assert_eq!(tag_do_feed("<feed></feed>"), None);
     }
 
     #[test]

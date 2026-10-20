@@ -713,7 +713,7 @@ impl Launcher {
                 let mais = quadrado(traco(ICONE_MAIS, 16.0, COR_TEXTO()).into(), Msg::Menu(i));
                 match (l.atualizacao(), l.instalada.is_some(), l.instalavel()) {
                     (Some(r), _, _) => row![secundario("Abrir", Msg::Abrir(i)), primario(text(format!("Atualizar para {}", r.versao)).size(13).font(NEGRITO).into(), Msg::Instalar(i)), mais],
-                    (None, true, _) => row![secundario("Abrir", Msg::Abrir(i)), mais],
+                    (None, true, _) => row![primario(text("Abrir").size(13).font(NEGRITO).into(), Msg::Abrir(i)), mais],
                     (None, false, Some(r)) => {
                         let tamanho = r.pacote.as_ref().filter(|p| p.tamanho > 0).map_or(String::new(), |p| format!(" · {}", megas(p.tamanho)));
                         let rotulo = row![traco(ICONE_BAIXAR, 16.0, Color::WHITE), text(format!("Instalar{tamanho}")).size(13).font(NEGRITO)].spacing(8).align_y(Alignment::Center);

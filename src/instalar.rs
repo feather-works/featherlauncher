@@ -1,8 +1,8 @@
 //! Baixar, conferir o SHA256, instalar e abrir. Tudo na pasta do usuário,
 //! sem pedir senha de administrador.
 use crate::releases::{cliente, App, Arquivo, Release};
-use iced::futures::channel::mpsc::Sender;
-use iced::futures::{SinkExt, Stream};
+use pelicano::futures::channel::mpsc::Sender;
+use pelicano::futures::{SinkExt, Stream};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
@@ -181,7 +181,7 @@ fn desinstalar_em(_app: &App, exe: &Path) -> Result<(), String> {
 }
 
 pub fn baixar_e_instalar(app: &'static App, rel: Release) -> impl Stream<Item = Evento> {
-    iced::stream::channel(16, move |mut saida: Sender<Evento>| async move {
+    crate::tarefas::fluxo(16, move |mut saida: Sender<Evento>| async move {
         let fim = executar(app, &rel, &mut saida).await.map(|_| rel.versao.clone());
         let _ = saida.send(Evento::Fim(fim)).await;
     })
@@ -222,7 +222,7 @@ pub async fn atualizar_launcher(rel: Release) -> Result<PathBuf, String> {
     let arquivo = parcial(&pacote, &rel.versao);
     fs::create_dir_all(pasta_downloads()).map_err(|e| e.to_string())?;
     // Ninguém ouve o progresso: são poucos MB e a tela só mostra "Atualizando…".
-    let (mut saida, _) = iced::futures::channel::mpsc::channel(1);
+    let (mut saida, _) = pelicano::futures::channel::mpsc::channel(1);
     baixar(&pacote, &arquivo, &mut saida).await?;
     tokio::task::spawn_blocking(move || {
         if sha256(&arquivo)? != esperado {

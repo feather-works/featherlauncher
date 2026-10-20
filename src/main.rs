@@ -529,7 +529,10 @@ impl Launcher {
             configuracoes: false,
             // A captura de tela não espera resposta de ninguém; no macOS ainda não há como abrir junto.
             perguntar_inicio: !perguntou_inicio && !cfg!(target_os = "macos") && std::env::var_os("FEATHERLAUNCHER_CAPTURAR").is_none(),
-            inicia_com_sistema: instalar::inicia_com_sistema(),
+            inicia_com_sistema: {
+                instalar::atualizar_inicio();
+                instalar::inicia_com_sistema()
+            },
             erro_inicio: None,
             tema,
             grade,
@@ -1092,6 +1095,10 @@ impl App for Launcher {
                 }
                 self.erro_inicio = instalar::iniciar_com_sistema(sim).err();
                 self.inicia_com_sistema = instalar::inicia_com_sistema();
+                // A pena aparece já, sem esperar o próximo login.
+                if sim && self.erro_inicio.is_none() {
+                    bandeja::garantir();
+                }
             }
             Msg::Grade(g) => {
                 self.grade = g;
@@ -1157,6 +1164,9 @@ impl App for Launcher {
                     self.fechar_bloqueado = true;
                     return Task::none();
                 }
+                // Como o OneDrive: a janela sai da barra de aplicativos e o launcher segue na
+                // bandeja; fecha de vez pelo "Sair" do menu da pena.
+                bandeja::garantir();
                 return Task::window(WindowCmd::Close);
             }
         }

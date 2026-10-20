@@ -1,6 +1,6 @@
 //! `featherlauncher --bandeja`: a pena na bandeja do sistema, como a do OneDrive. Fica
-//! aberta desde o login, confere as versões na entrada e a cada 6 horas, e avisa por
-//! notificação; o clique (ou "Abrir o launcher" no menu) abre a janela.
+//! aberta desde o login (ou desde que a janela fechou), confere as versões na entrada e
+//! a cada 6 horas, e avisa por notificação; o clique (ou "Abrir o launcher") abre a janela.
 
 /// shortcut: no Windows ainda não há ícone na bandeja (pede um laço de mensagens Win32);
 /// lá o login só confere uma vez, avisa e sai. Fazer com a crate `tray-icon` quando pesar.
@@ -9,8 +9,12 @@ pub fn rodar() {
     crate::aviso::verificar();
 }
 
+/// Sem bandeja, não há para onde a janela ir: fechar fecha.
+#[cfg(not(target_os = "linux"))]
+pub fn garantir() {}
+
 #[cfg(target_os = "linux")]
-pub use linux::rodar;
+pub use linux::{garantir, rodar};
 
 #[cfg(target_os = "linux")]
 mod linux {
@@ -21,6 +25,7 @@ mod linux {
     use pelicano::futures::executor::block_on;
     use pelicano::futures::future::select;
     use pelicano::futures::StreamExt;
+    use std::process::{Command, Stdio};
     use std::time::Duration;
 
     const INTERVALO: Duration = Duration::from_secs(6 * 60 * 60);
@@ -92,7 +97,49 @@ mod linux {
         }
     }
 
+    #[cfg(test)]
+    mod testes {
+        use super::*;
+
+        #[test]
+        fn reconhece_a_linha_de_comando_da_bandeja() {
+            assert!(e_bandeja(b"/usr/bin/featherlauncher\0--bandeja\0"));
+            assert!(!e_bandeja(b"/usr/bin/featherlauncher\0"));
+            assert!(!e_bandeja(b"/usr/bin/vim\0--bandeja\0"));
+            assert!(!e_bandeja(b""));
+        }
+    }
+
+    /// A pena já está na barra? Procura outro `featherlauncher --bandeja` deste usuário em
+    /// `/proc` (sem arquivo de pid: acha também a pena de uma versão anterior do launcher).
+    fn viva() -> bool {
+        let eu = std::process::id().to_string();
+        let Ok(processos) = std::fs::read_dir("/proc") else { return false };
+        // Só as pastas numéricas: `/proc/self` é um atalho para este mesmo processo.
+        processos.flatten().filter(|p| p.file_name().to_str().is_some_and(|n| n != eu && n.bytes().all(|b| b.is_ascii_digit()))).any(|p| std::fs::read(p.path().join("cmdline")).is_ok_and(|c| e_bandeja(&c)))
+    }
+
+    /// `cmdline` (argumentos separados por zero) de um `featherlauncher --bandeja`?
+    fn e_bandeja(cmdline: &[u8]) -> bool {
+        let mut args = cmdline.split(|&b| b == 0);
+        args.next().is_some_and(|exe| exe.ends_with(b"featherlauncher")) && args.any(|a| a == b"--bandeja")
+    }
+
+    /// Põe a pena na barra se ela ainda não está (a janela fechou, ou a pessoa ligou o aviso).
+    pub fn garantir() {
+        if viva() {
+            return;
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            let _ = Command::new(exe).arg("--bandeja").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+        }
+    }
+
     pub fn rodar() {
+        // shortcut: duas aberturas no mesmo instante ainda podem passar as duas por aqui; trocar por flock se acontecer.
+        if viva() {
+            return;
+        }
         block_on(no_tokio(async {
             let (pedir, mut pedidos) = unbounded();
             let bandeja = match (Bandeja { pendentes: Vec::new(), verificando: true, pedir }).spawn().await {

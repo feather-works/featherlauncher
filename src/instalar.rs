@@ -408,6 +408,17 @@ pub fn inicia_com_sistema() -> bool {
     atalho_de_inicio().exists()
 }
 
+/// Entrada de antes da bandeja (abria a janela inteira no login): regrava com o `--bandeja`.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn atualizar_inicio() {
+    if fs::read_to_string(atalho_de_inicio()).is_ok_and(|e| !e.contains("--bandeja")) {
+        let _ = iniciar_com_sistema(true);
+    }
+}
+
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+pub fn atualizar_inicio() {}
+
 #[cfg(all(unix, not(target_os = "macos")))]
 pub fn iniciar_com_sistema(sim: bool) -> Result<(), String> {
     let atalho = atalho_de_inicio();

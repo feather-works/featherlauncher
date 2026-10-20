@@ -462,7 +462,7 @@ impl Launcher {
             _ => None,
         });
         let (origem, cor) = match limite {
-            Some(e) => (format!("Consulta pausada: {e}"), hex(LARANJA)),
+            Some(e) => (format!("Consulta pausada: {e}"), tom(LARANJA)),
             None if verificando => ("Verificando…".to_string(), COR_TEXTO_MUTED()),
             None => (format!("Releases do GitHub ({})", releases::ORG), COR_TEXTO_MUTED()),
         };
@@ -567,7 +567,7 @@ impl Launcher {
             (Some(r), Some(inst), _) => row![
                 text(if inst == "?" { "versão desconhecida".to_string() } else { inst.to_string() }).size(13).font(MONO).color(COR_TEXTO_MUTED()),
                 text("→").size(13).font(MONO).color(COR_TEXTO_MUTED()),
-                text(r.versao.clone()).size(13).font(MONO).color(hex(LARANJA)),
+                text(r.versao.clone()).size(13).font(MONO).color(tom(LARANJA)),
             ]
             .spacing(6)
             .into(),
@@ -596,15 +596,15 @@ impl Launcher {
     fn estado(&self, i: usize) -> Element<'_, Msg> {
         let l = &self.linhas[i];
         let (rotulo, cor) = match (&l.download, &l.consulta) {
-            (Some(Download::Baixando { .. }), _) => ("Baixando…".to_string(), hex(AZUL)),
-            (Some(Download::Pausado { .. }), _) => ("Pausado".into(), hex(LARANJA)),
-            (Some(Download::Instalando), _) => ("Instalando…".into(), hex(AZUL)),
-            (Some(Download::Desinstalando), _) => ("Desinstalando…".into(), hex(AZUL)),
+            (Some(Download::Baixando { .. }), _) => ("Baixando…".to_string(), tom(AZUL)),
+            (Some(Download::Pausado { .. }), _) => ("Pausado".into(), tom(LARANJA)),
+            (Some(Download::Instalando), _) => ("Instalando…".into(), tom(AZUL)),
+            (Some(Download::Desinstalando), _) => ("Desinstalando…".into(), tom(AZUL)),
             (None, Consulta::Verificando) if l.instalada.is_none() => ("Verificando…".into(), COR_TEXTO_MUTED()),
             (None, Consulta::Falhou(e)) if l.instalada.is_none() && e.starts_with(releases::LIMITE) => ("Aguardando o GitHub".into(), COR_TEXTO_MUTED()),
             (None, Consulta::Falhou(_)) if l.instalada.is_none() => ("Sem conexão".into(), COR_ERRO()),
-            _ if l.atualizacao().is_some() => ("Atualização disponível".into(), hex(LARANJA)),
-            _ if l.instalada.is_some() => ("Instalado".into(), hex(VERDE)),
+            _ if l.atualizacao().is_some() => ("Atualização disponível".into(), tom(LARANJA)),
+            _ if l.instalada.is_some() => ("Instalado".into(), tom(VERDE)),
             _ if l.em_breve() => return selo_em_breve(),
             _ if l.instalavel().is_some() => ("Não instalado".into(), COR_TEXTO_MUTED()),
             _ => (format!("Sem pacote para {}", releases::nome_do_sistema()), COR_TEXTO_MUTED()),
@@ -802,6 +802,19 @@ fn campo_sem_borda(t: &iced::Theme, s: text_input::Status) -> text_input::Style 
 
 fn linha_fina<'a>(cor: Color) -> Element<'a, Msg> {
     container(Space::with_height(1)).width(Length::Fill).style(move |_| container::Style { background: Some(cor.into()), ..Default::default() }).into()
+}
+
+/// As cores de estado legíveis no tema atual: no escuro, os mesmos tons mais claros.
+fn tom(cor: &str) -> Color {
+    if !tema::escuro() {
+        return hex(cor);
+    }
+    hex(match cor {
+        VERDE => "#81c995",
+        LARANJA => "#f6ae6b",
+        AZUL => "#8ab4f8",
+        outra => outra,
+    })
 }
 
 fn hex(s: &str) -> Color {

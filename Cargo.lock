@@ -1193,7 +1193,7 @@ dependencies = [
 
 [[package]]
 name = "featherlauncher"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "dirs 6.0.0",
  "embed-resource",
@@ -2659,8 +2659,8 @@ checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
 
 [[package]]
 name = "pelicano"
-version = "0.1.8"
-source = "git+https://github.com/feather-works/pelicano?tag=v0.1.8#fbdd3f3676ea7eca3fde153d5dda3bc52c70504b"
+version = "0.1.16"
+source = "git+https://github.com/feather-works/pelicano?tag=v0.1.16#23b829c6b9514092ef6bbffd3d2415acb4534312"
 dependencies = [
  "accesskit",
  "accesskit_winit",

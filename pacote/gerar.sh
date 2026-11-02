@@ -4,7 +4,7 @@
 #   featherlauncher-linux-x86_64.tar.gz   Linux portátil (instalar.sh na pasta do usuário)
 #   featherlauncher-linux-amd64.deb       Debian, Ubuntu, Mint…
 #   featherlauncher-windows-x64.exe       Windows 10/11, portátil (a autoatualização do launcher baixa este)
-#   featherlauncher-windows-x64-instalador.exe  Windows 10/11, instalador por usuário (NSIS)
+#   featherlauncher-windows-x64-instalador.exe  Windows 10/11, instalador para todos em Program Files\FeatherWorks (NSIS, pede administrador)
 #   SHA256SUMS
 #
 # Uso: pacote/gerar.sh [linux|windows ...]   (sem argumentos = todos)

@@ -1,7 +1,9 @@
 ; Instalador do FeatherWorks Launcher para Windows (NSIS). Gerado por pacote/gerar.sh:
 ;   makensis -DVERSAO=0.0.1 -DEXE=caminho/featherlauncher.exe -DSAIDA=caminho/instalador.exe pacote/featherlauncher.nsi
-; Instala por usuário (sem pedir administrador), cria atalhos e registra o desinstalador
-; em "Aplicativos instalados". Não abre arquivos: sem associação de formato.
+; Instala para todos os usuários em "Arquivos de Programas\FeatherWorks\Launcher", a pasta da
+; suíte (os programas vão para FeatherWorks\<Programa>). Pede administrador uma vez: só o
+; administrador altera os .exe. Cria atalhos e registra o desinstalador em "Aplicativos
+; instalados". Não abre arquivos: sem associação de formato.
 
 Unicode true
 !include "MUI2.nsh"
@@ -12,9 +14,9 @@ Unicode true
 
 Name "FeatherWorks Launcher ${VERSAO}"
 OutFile "${SAIDA}"
-InstallDir "$LOCALAPPDATA\Programs\FeatherWorks Launcher"
-InstallDirRegKey HKCU "Software\FeatherWorks\FeatherWorks Launcher" "Pasta"
-RequestExecutionLevel user
+InstallDir "$PROGRAMFILES64\FeatherWorks\Launcher"
+InstallDirRegKey HKLM "Software\FeatherWorks\FeatherWorks Launcher" "Pasta"
+RequestExecutionLevel admin
 SetCompressor /SOLID lzma
 
 !define MUI_ICON "icones\featherlauncher.ico"
@@ -34,8 +36,23 @@ SetCompressor /SOLID lzma
 !include "FileFunc.nsh"
 !define DESINSTALAR "Software\Microsoft\Windows\CurrentVersion\Uninstall\FeatherWorks Launcher"
 
+; Atalhos de todos os usuários e o registro de 64 bits (o programa é de 64 bits).
+Function .onInit
+  SetShellVarContext all
+  SetRegView 64
+FunctionEnd
+
+Function un.onInit
+  SetShellVarContext all
+  SetRegView 64
+FunctionEnd
+
 Section "FeatherWorks Launcher"
   SetOutPath "$INSTDIR"
+  ; A autoatualização roda este instalador com o launcher aberto: o .exe em uso não se
+  ; sobrescreve, mas se renomeia; o .old sai na próxima instalação ou na desinstalação.
+  Delete "$INSTDIR\featherlauncher.old"
+  Rename "$INSTDIR\featherlauncher.exe" "$INSTDIR\featherlauncher.old"
   File "/oname=featherlauncher.exe" "${EXE}"
   File "icones\featherlauncher.ico"
   File "/oname=LICENSE.txt" "..\LICENSE"
@@ -44,19 +61,19 @@ Section "FeatherWorks Launcher"
   CreateShortCut "$SMPROGRAMS\FeatherWorks Launcher.lnk" "$INSTDIR\featherlauncher.exe" "" "$INSTDIR\featherlauncher.ico"
   CreateShortCut "$DESKTOP\FeatherWorks Launcher.lnk" "$INSTDIR\featherlauncher.exe" "" "$INSTDIR\featherlauncher.ico"
 
-  WriteRegStr HKCU "Software\FeatherWorks\FeatherWorks Launcher" "Pasta" "$INSTDIR"
-  WriteRegStr HKCU "${DESINSTALAR}" "DisplayName" "FeatherWorks Launcher"
-  WriteRegStr HKCU "${DESINSTALAR}" "DisplayVersion" "${VERSAO}"
-  WriteRegStr HKCU "${DESINSTALAR}" "Publisher" "FeatherWorks"
+  WriteRegStr HKLM "Software\FeatherWorks\FeatherWorks Launcher" "Pasta" "$INSTDIR"
+  WriteRegStr HKLM "${DESINSTALAR}" "DisplayName" "FeatherWorks Launcher"
+  WriteRegStr HKLM "${DESINSTALAR}" "DisplayVersion" "${VERSAO}"
+  WriteRegStr HKLM "${DESINSTALAR}" "Publisher" "FeatherWorks"
   ; Tamanho em "Programas e Recursos" (KB, do que foi instalado).
   ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
   IntFmt $0 "0x%08X" $0
-  WriteRegDWORD HKCU "${DESINSTALAR}" "EstimatedSize" "$0"
-  WriteRegStr HKCU "${DESINSTALAR}" "DisplayIcon" "$INSTDIR\featherlauncher.ico"
-  WriteRegStr HKCU "${DESINSTALAR}" "URLInfoAbout" "https://github.com/feather-works/featherlauncher"
-  WriteRegStr HKCU "${DESINSTALAR}" "UninstallString" '"$INSTDIR\desinstalar.exe"'
-  WriteRegDWORD HKCU "${DESINSTALAR}" "NoModify" 1
-  WriteRegDWORD HKCU "${DESINSTALAR}" "NoRepair" 1
+  WriteRegDWORD HKLM "${DESINSTALAR}" "EstimatedSize" "$0"
+  WriteRegStr HKLM "${DESINSTALAR}" "DisplayIcon" "$INSTDIR\featherlauncher.ico"
+  WriteRegStr HKLM "${DESINSTALAR}" "URLInfoAbout" "https://github.com/feather-works/featherlauncher"
+  WriteRegStr HKLM "${DESINSTALAR}" "UninstallString" '"$INSTDIR\desinstalar.exe"'
+  WriteRegDWORD HKLM "${DESINSTALAR}" "NoModify" 1
+  WriteRegDWORD HKLM "${DESINSTALAR}" "NoRepair" 1
 SectionEnd
 
 Section "Uninstall"
@@ -69,8 +86,11 @@ Section "Uninstall"
   Delete "$INSTDIR\LICENSE.txt"
   Delete "$INSTDIR\desinstalar.exe"
   RMDir "$INSTDIR"
+  ; A pasta da suíte só sai se ficou vazia (sem nenhum programa instalado).
+  RMDir "$INSTDIR\.."
   ; "Abrir com o sistema" do launcher (src/instalar.rs, iniciar_com_sistema) apontaria para um .exe apagado.
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "FeatherWorksLauncher"
-  DeleteRegKey HKCU "Software\FeatherWorks\FeatherWorks Launcher"
-  DeleteRegKey HKCU "${DESINSTALAR}"
+  DeleteRegKey HKLM "Software\FeatherWorks\FeatherWorks Launcher"
+  DeleteRegKey /ifempty HKLM "Software\FeatherWorks"
+  DeleteRegKey HKLM "${DESINSTALAR}"
 SectionEnd

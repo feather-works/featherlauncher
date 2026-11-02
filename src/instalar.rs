@@ -29,7 +29,7 @@ fn pasta_downloads() -> PathBuf {
 
 /// Onde os apps vão parar, como a tela mostra.
 pub fn destino() -> &'static str {
-    if cfg!(windows) { "%LOCALAPPDATA%\\Programs" } else if cfg!(target_os = "macos") { "~/Applications" } else { "~/.local" }
+    if cfg!(windows) { "%ProgramFiles%\\FeatherWorks" } else if cfg!(target_os = "macos") { "~/Applications" } else { "~/.local" }
 }
 
 /// O arquivo baixado pela metade fica aqui; é dele que a pausa continua. A versão
@@ -66,8 +66,12 @@ fn alterar_instalados(pasta: &Path, mudar: impl FnOnce(&mut HashMap<String, Stri
 pub fn executavel(app: &App) -> Option<PathBuf> {
     let casa = dirs::home_dir().unwrap_or_default();
     let candidatos: Vec<PathBuf> = if cfg!(windows) {
+        // Program Files\FeatherWorks (instalador para todos); %LOCALAPPDATA%\Programs é o das
+        // versões antigas, por usuário, até cada app passar para a pasta da suíte.
+        let exe = format!("{}.exe", app.id);
         let local = dirs::data_local_dir().unwrap_or_default();
-        vec![local.join("Programs").join(app.nome()).join(format!("{}.exe", app.id))]
+        let todos = std::env::var_os("ProgramFiles").map(PathBuf::from).unwrap_or_default();
+        vec![todos.join("FeatherWorks").join(app.nome()).join(&exe), local.join("Programs").join(app.nome()).join(&exe)]
     } else if cfg!(target_os = "macos") {
         vec![casa.join("Applications").join(format!("{}.app", app.nome())), PathBuf::from(format!("/Applications/{}.app", app.nome()))]
     } else {
@@ -82,7 +86,10 @@ pub fn executavel(app: &App) -> Option<PathBuf> {
 #[cfg_attr(windows, allow(unused_variables))]
 pub fn versao_externa(app: &App, exe: &Path) -> Option<String> {
     #[cfg(windows)]
-    let v = registro::ler(&format!(r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{}", app.nome()), "DisplayVersion")?;
+    let v = {
+        let chave = format!(r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{}", app.nome());
+        registro::ler_todos(&chave, "DisplayVersion").or_else(|| registro::ler(&chave, "DisplayVersion"))?
+    };
     #[cfg(not(windows))]
     let v = {
         let saida = |cmd: &mut Command| cmd.output().ok().filter(|s| s.status.success()).map(|s| String::from_utf8_lossy(&s.stdout).trim().to_string()).filter(|s| !s.is_empty());
@@ -173,9 +180,9 @@ fn desinstalar_em(app: &App, exe: &Path) -> Result<(), String> {
 
 #[cfg(windows)]
 fn desinstalar_em(_app: &App, exe: &Path) -> Result<(), String> {
-    // O desinstalador que o NSIS deixou na pasta, sem perguntas.
+    // O desinstalador que o NSIS deixou na pasta, sem perguntas (em Program Files o Windows pede administrador).
     let des = exe.parent().map(|p| p.join("desinstalar.exe")).filter(|d| d.exists()).ok_or("o desinstalador do aplicativo não foi encontrado")?;
-    rodar(Command::new(des).arg("/S"))
+    abrir_e_esperar(&des, "/S")
 }
 
 #[cfg(target_os = "macos")]
@@ -219,7 +226,16 @@ async fn executar(app: &'static App, rel: &Release, saida: &mut Sender<Evento>) 
 pub async fn atualizar_launcher(rel: Release) -> Result<PathBuf, String> {
     let alvo = std::env::current_exe().map_err(|e| e.to_string())?;
     let pelo_deb = cfg!(target_os = "linux") && alvo.starts_with("/usr");
-    let pacote = if pelo_deb { rel.arquivos.iter().find(|a| a.nome.ends_with("-linux-amd64.deb")).cloned() } else { rel.pacote.clone() };
+    // Instalado em Program Files (pelo instalador), o .exe só muda com administrador: atualiza
+    // pelo instalador novo, que pede o UAC e troca o .exe em uso.
+    let pelo_instalador = cfg!(windows) && std::env::var_os("ProgramFiles").is_some_and(|p| alvo.starts_with(p));
+    let pacote = if pelo_deb {
+        rel.arquivos.iter().find(|a| a.nome.ends_with("-linux-amd64.deb")).cloned()
+    } else if pelo_instalador {
+        rel.arquivos.iter().find(|a| a.nome.ends_with("-windows-x64-instalador.exe")).cloned()
+    } else {
+        rel.pacote.clone()
+    };
     let pacote = pacote.ok_or("esta versão não tem pacote para este sistema")?;
     let esperado = soma_esperada(&rel, &pacote.nome).await?;
     let arquivo = parcial(&pacote, &rel.versao);
@@ -232,7 +248,13 @@ pub async fn atualizar_launcher(rel: Release) -> Result<PathBuf, String> {
             let _ = fs::remove_file(&arquivo);
             return Err("o arquivo baixado não confere com o SHA256 da versão; tente de novo".into());
         }
-        let r = if pelo_deb { rodar(Command::new("pkexec").arg("dpkg").arg("-i").arg(&arquivo)) } else { trocar_launcher(&arquivo, &alvo) };
+        let r = if pelo_deb {
+            rodar(Command::new("pkexec").arg("dpkg").arg("-i").arg(&arquivo))
+        } else if pelo_instalador {
+            atualizar_pelo_instalador(&arquivo)
+        } else {
+            trocar_launcher(&arquivo, &alvo)
+        };
         let _ = fs::remove_file(&arquivo);
         r.map(|_| alvo)
     })
@@ -262,6 +284,21 @@ fn trocar_launcher(pacote: &Path, alvo: &Path) -> Result<(), String> {
         let _ = fs::rename(&velho, alvo);
         e.to_string()
     })
+}
+
+#[cfg(windows)]
+fn atualizar_pelo_instalador(pacote: &Path) -> Result<(), String> {
+    let tmp = pasta_downloads().join("featherlauncher-atualizar");
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+    let r = rodar_instalador(pacote, &tmp);
+    let _ = fs::remove_dir_all(&tmp);
+    r
+}
+
+#[cfg(not(windows))]
+fn atualizar_pelo_instalador(_pacote: &Path) -> Result<(), String> {
+    unreachable!("só no Windows")
 }
 
 #[cfg(target_os = "macos")]
@@ -370,13 +407,49 @@ fn instalar_em(_app: &App, pacote: &Path, tmp: &Path) -> Result<(), String> {
 
 #[cfg(windows)]
 fn instalar_em(_app: &App, pacote: &Path, tmp: &Path) -> Result<(), String> {
-    // Instalador NSIS por usuário (RequestExecutionLevel user); /S = sem perguntas, como no
-    // "Instalar" de um clique. Com o nome da release ("0.2.6-X.exe.parcial" → "X.exe") e sem
-    // esconder o processo: programa baixado rodado escondido é o que o Defender acusa.
+    rodar_instalador(pacote, tmp)
+}
+
+/// Instalador NSIS; /S = sem perguntas, como no "Instalar" de um clique. Com o nome da release
+/// ("0.2.6-X.exe.parcial" → "X.exe") e sem esconder o processo: programa baixado rodado
+/// escondido é o que o Defender acusa. O de Program Files pede administrador (UAC).
+#[cfg(windows)]
+fn rodar_instalador(pacote: &Path, tmp: &Path) -> Result<(), String> {
     let nome = pacote.file_name().and_then(|n| n.to_str()).unwrap_or("instalador.exe").trim_end_matches(".parcial");
     let exe = tmp.join(nome.split_once('-').map_or(nome, |(_, n)| n));
     fs::copy(pacote, &exe).map_err(|e| e.to_string())?;
-    rodar(Command::new(&exe).arg("/S"))
+    abrir_e_esperar(&exe, "/S")
+}
+
+/// Abre `exe` pelo ShellExecuteEx e espera terminar. Diferente do `Command`, ele respeita o
+/// manifesto do instalador que pede administrador: o Windows mostra o UAC em vez de recusar.
+#[cfg(windows)]
+fn abrir_e_esperar(exe: &Path, args: &str) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE};
+    use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let largo = |s: &std::ffi::OsStr| -> Vec<u16> { std::os::windows::ffi::OsStrExt::encode_wide(s).chain([0]).collect() };
+    let (arquivo, parametros) = (largo(exe.as_os_str()), largo(std::ffi::OsStr::new(args)));
+    // SAFETY: estrutura zerada com o tamanho certo, textos terminados em zero que vivem até o fim.
+    let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
+    info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+    info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+    info.lpFile = arquivo.as_ptr();
+    info.lpParameters = parametros.as_ptr();
+    info.nShow = SW_SHOWNORMAL;
+    if unsafe { ShellExecuteExW(&mut info) } == 0 {
+        let e = std::io::Error::last_os_error();
+        // 1223 = ERROR_CANCELLED: a pessoa disse "Não" no pedido de administrador.
+        return Err(if e.raw_os_error() == Some(1223) { "cancelado: o Windows pediu permissão de administrador e ela foi negada".into() } else { format!("não abriu {}: {e}", exe.display()) });
+    }
+    let mut codigo = 1u32;
+    unsafe {
+        WaitForSingleObject(info.hProcess, INFINITE);
+        GetExitCodeProcess(info.hProcess, &mut codigo);
+        CloseHandle(info.hProcess);
+    }
+    (codigo == 0).then_some(()).ok_or_else(|| format!("{} terminou com o código {codigo}", exe.display()))
 }
 
 #[cfg(target_os = "macos")]
@@ -457,11 +530,20 @@ mod registro {
         s.encode_utf16().chain([0]).collect()
     }
 
+    /// Em HKLM: o que os instaladores para todos os usuários (Program Files) gravam.
+    pub fn ler_todos(chave: &str, nome: &str) -> Option<String> {
+        ler_em(windows_sys::Win32::System::Registry::HKEY_LOCAL_MACHINE, chave, nome)
+    }
+
     pub fn ler(chave: &str, nome: &str) -> Option<String> {
+        ler_em(HKEY_CURRENT_USER, chave, nome)
+    }
+
+    fn ler_em(raiz: windows_sys::Win32::System::Registry::HKEY, chave: &str, nome: &str) -> Option<String> {
         let (chave, nome) = (largo(chave), largo(nome));
         let mut buf = [0u16; 1024];
         let mut tam = std::mem::size_of_val(&buf) as u32;
-        let r = unsafe { RegGetValueW(HKEY_CURRENT_USER, chave.as_ptr(), nome.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut tam) };
+        let r = unsafe { RegGetValueW(raiz, chave.as_ptr(), nome.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut tam) };
         (r == 0).then(|| String::from_utf16_lossy(&buf[..(tam as usize / 2).saturating_sub(1)]))
     }
 

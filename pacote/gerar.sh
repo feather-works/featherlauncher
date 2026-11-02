@@ -3,11 +3,12 @@
 # página da organização usa (releases/latest/download/<nome>):
 #   featherlauncher-linux-x86_64.tar.gz   Linux portátil (instalar.sh na pasta do usuário)
 #   featherlauncher-linux-amd64.deb       Debian, Ubuntu, Mint…
-#   featherlauncher-windows-x64.exe       Windows 10/11, portátil (sem instalador)
+#   featherlauncher-windows-x64.exe       Windows 10/11, portátil (a autoatualização do launcher baixa este)
+#   featherlauncher-windows-x64-instalador.exe  Windows 10/11, instalador por usuário (NSIS)
 #   SHA256SUMS
 #
 # Uso: pacote/gerar.sh [linux|windows ...]   (sem argumentos = todos)
-# Windows precisa do alvo x86_64-pc-windows-gnu e do mingw-w64.
+# Windows precisa do alvo x86_64-pc-windows-gnu, do mingw-w64 e do makensis.
 set -euo pipefail
 
 pacote="$(cd "$(dirname "$0")" && pwd)"
@@ -90,6 +91,7 @@ windows() {
   cargo build --release --target x86_64-pc-windows-gnu --manifest-path "$raiz/Cargo.toml"
   cp "$raiz/target/x86_64-pc-windows-gnu/release/featherlauncher.exe" "$saida/featherlauncher-windows-x64.exe"
   x86_64-w64-mingw32-strip "$saida/featherlauncher-windows-x64.exe" 2>/dev/null || true
+  (cd "$pacote" && makensis -V2 -DVERSAO="$versao" -DEXE="$saida/featherlauncher-windows-x64.exe" -DSAIDA="$saida/featherlauncher-windows-x64-instalador.exe" featherlauncher.nsi)
 }
 
 for a in "${alvos[@]}"; do

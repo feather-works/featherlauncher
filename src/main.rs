@@ -2,6 +2,8 @@
 //! FeatherWorks Launcher: instala, atualiza e abre os aplicativos da suíte.
 mod aviso;
 mod bandeja;
+#[cfg(windows)]
+mod cantos;
 mod consumo;
 mod instalar;
 mod releases;
@@ -446,6 +448,12 @@ enum Filtro {
 #[derive(Debug, Clone)]
 enum Msg {
     Verificar,
+    /// Nada a fazer (resposta de uma tarefa que só age na janela).
+    #[cfg(windows)]
+    Nenhum,
+    /// Windows 10: recortar o canto arredondado da janela (cantos.rs), ao abrir e a cada tamanho.
+    #[cfg(windows)]
+    Recortar,
     Release(usize, Result<Option<Release>, String>),
     Instalar(usize),
     AtualizarTudo,
@@ -549,6 +557,8 @@ impl Launcher {
             Task::done(Msg::Amostrar),
             Task::run(tarefas::relogio(std::time::Duration::from_secs(1)), |_| Msg::Amostrar),
         ];
+        #[cfg(windows)]
+        tarefas.push(Task::done(Msg::Recortar));
         // FEATHERLAUNCHER_CAPTURAR=tela.png fotografa a janela depois que as releases chegam e fecha.
         if std::env::var_os("FEATHERLAUNCHER_CAPTURAR").is_some() {
             tarefas.push(Task::perform(no_tokio(async { tokio::time::sleep(std::time::Duration::from_secs(4)).await }), |_| Msg::Capturar));
@@ -1153,7 +1163,18 @@ impl App for Launcher {
                 }
                 std::process::exit(0);
             }
-            Msg::Tamanho(s) => self.tamanho = s,
+            Msg::Tamanho(s) => {
+                self.tamanho = s;
+                #[cfg(windows)]
+                return self.update(Msg::Recortar);
+            }
+            #[cfg(windows)]
+            Msg::Nenhum => {}
+            #[cfg(windows)]
+            Msg::Recortar => return Task::window_handle(WindowId::MAIN, |h| {
+                cantos::recortar(h, RAIO_JANELA);
+                Msg::Nenhum
+            }),
             Msg::Puxar(d) => return Task::window(WindowCmd::DragResize(d)),
             Msg::Arrastar => return Task::window(WindowCmd::Drag),
             Msg::Minimizar => return Task::window(WindowCmd::Minimize),

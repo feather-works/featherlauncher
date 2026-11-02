@@ -18,12 +18,12 @@
 |---|---|
 | Linux (Debian, Ubuntu, Mint…) | [featherlauncher-linux-amd64.deb](https://github.com/feather-works/featherlauncher/releases/latest/download/featherlauncher-linux-amd64.deb) |
 | Linux (qualquer distribuição) | [featherlauncher-linux-x86_64.tar.gz](https://github.com/feather-works/featherlauncher/releases/latest/download/featherlauncher-linux-x86_64.tar.gz): descompacte e rode `./instalar.sh` |
-| Windows 10/11 | [featherlauncher-windows-x64.exe](https://github.com/feather-works/featherlauncher/releases/latest/download/featherlauncher-windows-x64.exe): portátil, é só abrir |
+| Windows 10/11 | [featherlauncher-windows-x64-instalador.exe](https://github.com/feather-works/featherlauncher/releases/latest/download/featherlauncher-windows-x64-instalador.exe): instala em `C:\Program Files\FeatherWorks\Launcher` (pede administrador uma vez). Portátil: [featherlauncher-windows-x64.exe](https://github.com/feather-works/featherlauncher/releases/latest/download/featherlauncher-windows-x64.exe), é só abrir |
 
 ## O que ele faz
 
 - Lista os aplicativos da suíte com a versão instalada e a última publicada no GitHub.
-- Instala e atualiza na pasta do usuário, sem administrador (`~/.local` no Linux, `%LOCALAPPDATA%\Programs` no Windows).
+- Instala e atualiza os apps: no Windows em `C:\Program Files\FeatherWorks\<App>` (o Windows pede administrador a cada instalação); no Linux na pasta do usuário (`~/.local`), sem administrador.
 - Confere cada pacote pelo `SHA256SUMS` da release antes de instalar.
 - Pausa e continua downloads; "Atualizar tudo" de uma vez.
 - Consulta o GitHub com cache (ETag) e, se a cota da API acabar, pelo feed de releases.

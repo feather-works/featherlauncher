@@ -79,20 +79,43 @@ fn notificar(titulo: &str, corpo: &str) -> bool {
     }
 }
 
-/// Toast do Windows pelo PowerShell, com o AppId do próprio PowerShell (o launcher
-/// portátil não registra um). Os textos vão por variável de ambiente, fora do script.
+/// Balão do ícone de notificação (Shell_NotifyIcon), que o Windows 10/11 mostra como
+/// notificação comum. Nativo: sem PowerShell escondido, que o Defender acusava como trojan.
 #[cfg(windows)]
 fn notificar(titulo: &str, corpo: &str) -> bool {
-    const SCRIPT: &str = r#"
-[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null
-$x = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
-$t = $x.GetElementsByTagName('text')
-$t.Item(0).AppendChild($x.CreateTextNode($env:FW_TITULO)) > $null
-$t.Item(1).AppendChild($x.CreateTextNode($env:FW_CORPO)) > $null
-[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe').Show([Windows.UI.Notifications.ToastNotification]::new($x))
-"#;
-    let mut cmd = Command::new("powershell");
-    cmd.args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT]).env("FW_TITULO", titulo).env("FW_CORPO", corpo);
-    let _ = instalar::sem_console(&mut cmd).status();
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::Shell::{Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_TIP, NIIF_LARGE_ICON, NIIF_USER, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, LoadIconW, HWND_MESSAGE};
+    fn copiar(destino: &mut [u16], texto: &str) {
+        // Corta no tamanho do campo, deixando o zero final.
+        let cabe = destino.len() - 1;
+        for (d, c) in destino.iter_mut().zip(texto.encode_utf16().take(cabe)) {
+            *d = c;
+        }
+    }
+    let classe: Vec<u16> = "STATIC\0".encode_utf16().collect();
+    unsafe {
+        // Uma janela só de mensagens: o ícone precisa de um dono.
+        let janela = CreateWindowExW(0, classe.as_ptr(), std::ptr::null(), 0, 0, 0, 0, 0, HWND_MESSAGE, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null());
+        // O ícone 1 do .exe (build.rs).
+        let icone = LoadIconW(GetModuleHandleW(std::ptr::null()), 1 as _);
+        let mut dados: NOTIFYICONDATAW = std::mem::zeroed();
+        dados.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+        dados.hWnd = janela;
+        dados.uID = 1;
+        dados.uFlags = NIF_ICON | NIF_TIP | NIF_INFO;
+        dados.hIcon = icone;
+        dados.hBalloonIcon = icone;
+        dados.dwInfoFlags = NIIF_USER | NIIF_LARGE_ICON;
+        copiar(&mut dados.szTip, "FeatherWorks Launcher");
+        copiar(&mut dados.szInfoTitle, titulo);
+        copiar(&mut dados.szInfo, corpo);
+        if Shell_NotifyIconW(NIM_ADD, &dados) != 0 {
+            // O processo da bandeja sai logo depois; o ícone fica o tempo de a notificação aparecer.
+            std::thread::sleep(std::time::Duration::from_secs(10));
+            Shell_NotifyIconW(NIM_DELETE, &dados);
+        }
+        DestroyWindow(janela);
+    }
     false
 }

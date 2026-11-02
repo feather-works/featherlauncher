@@ -79,15 +79,18 @@ pub fn executavel(app: &App) -> Option<PathBuf> {
 /// A versão de um app que o launcher não instalou, perguntada a quem instalou
 /// (.deb/.rpm, instalador do Windows, Info.plist do .app). Rodar o executável
 /// com `--version` não serve: ele abriria a janela.
+#[cfg_attr(windows, allow(unused_variables))]
 pub fn versao_externa(app: &App, exe: &Path) -> Option<String> {
-    let saida = |cmd: &mut Command| sem_console(cmd).output().ok().filter(|s| s.status.success()).map(|s| String::from_utf8_lossy(&s.stdout).trim().to_string()).filter(|s| !s.is_empty());
-    let v = if cfg!(windows) {
-        let chave = format!(r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\{}", app.nome());
-        saida(Command::new("reg").args(["query", &chave, "/v", "DisplayVersion"]))?.split_whitespace().last()?.to_string()
-    } else if cfg!(target_os = "macos") {
-        saida(Command::new("defaults").arg("read").arg(exe.join("Contents/Info")).arg("CFBundleShortVersionString"))?
-    } else {
-        saida(Command::new("dpkg-query").args(["-W", "-f=${Version}", app.id])).or_else(|| saida(Command::new("rpm").args(["-q", "--qf", "%{VERSION}", app.id])))?
+    #[cfg(windows)]
+    let v = registro::ler(&format!(r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{}", app.nome()), "DisplayVersion")?;
+    #[cfg(not(windows))]
+    let v = {
+        let saida = |cmd: &mut Command| cmd.output().ok().filter(|s| s.status.success()).map(|s| String::from_utf8_lossy(&s.stdout).trim().to_string()).filter(|s| !s.is_empty());
+        if cfg!(target_os = "macos") {
+            saida(Command::new("defaults").arg("read").arg(exe.join("Contents/Info")).arg("CFBundleShortVersionString"))?
+        } else {
+            saida(Command::new("dpkg-query").args(["-W", "-f=${Version}", app.id])).or_else(|| saida(Command::new("rpm").args(["-q", "--qf", "%{VERSION}", app.id])))?
+        }
     };
     limpar_versao(&v)
 }
@@ -343,18 +346,8 @@ fn sha256(caminho: &Path) -> Result<String, String> {
     Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// No Windows, um programa de console (`reg`) aberto pelo launcher piscava uma janela preta.
-pub fn sem_console(cmd: &mut Command) -> &mut Command {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-    cmd
-}
-
 fn rodar(cmd: &mut Command) -> Result<(), String> {
-    let st = sem_console(cmd).status().map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
+    let st = cmd.status().map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
     st.success().then_some(()).ok_or_else(|| format!("{:?} terminou com {st}", cmd.get_program()))
 }
 
@@ -377,8 +370,11 @@ fn instalar_em(_app: &App, pacote: &Path, tmp: &Path) -> Result<(), String> {
 
 #[cfg(windows)]
 fn instalar_em(_app: &App, pacote: &Path, tmp: &Path) -> Result<(), String> {
-    // Instalador NSIS por usuário (RequestExecutionLevel user); /S = sem perguntas.
-    let exe = tmp.join("instalador.exe");
+    // Instalador NSIS por usuário (RequestExecutionLevel user); /S = sem perguntas, como no
+    // "Instalar" de um clique. Com o nome da release ("0.2.6-X.exe.parcial" → "X.exe") e sem
+    // esconder o processo: programa baixado rodado escondido é o que o Defender acusa.
+    let nome = pacote.file_name().and_then(|n| n.to_str()).unwrap_or("instalador.exe").trim_end_matches(".parcial");
+    let exe = tmp.join(nome.split_once('-').map_or(nome, |(_, n)| n));
     fs::copy(pacote, &exe).map_err(|e| e.to_string())?;
     rodar(Command::new(&exe).arg("/S"))
 }
@@ -431,24 +427,54 @@ pub fn iniciar_com_sistema(sim: bool) -> Result<(), String> {
     fs::write(&atalho, entrada).map_err(|e| format!("não gravou {}: {e}", atalho.display()))
 }
 
-/// A chave que o Windows lê ao entrar o usuário; sem administrador.
+/// A chave que o Windows lê ao entrar o usuário (em HKCU); sem administrador.
 #[cfg(windows)]
-const CHAVE_INICIO: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+const CHAVE_INICIO: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
 #[cfg(windows)]
 pub fn inicia_com_sistema() -> bool {
-    sem_console(Command::new("reg").args(["query", CHAVE_INICIO, "/v", "FeatherWorksLauncher"])).output().is_ok_and(|s| s.status.success())
+    registro::ler(CHAVE_INICIO, "FeatherWorksLauncher").is_some()
 }
 
 #[cfg(windows)]
 pub fn iniciar_com_sistema(sim: bool) -> Result<(), String> {
     if !sim {
-        // Sem a entrada, o `reg delete` falha; para quem pediu "não", tanto faz.
-        let _ = sem_console(Command::new("reg").args(["delete", CHAVE_INICIO, "/v", "FeatherWorksLauncher", "/f"])).output();
+        // Sem a entrada, apagar falha; para quem pediu "não", tanto faz.
+        registro::apagar(CHAVE_INICIO, "FeatherWorksLauncher");
         return Ok(());
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    rodar(Command::new("reg").args(["add", CHAVE_INICIO, "/v", "FeatherWorksLauncher", "/t", "REG_SZ", "/f", "/d"]).arg(format!("\"{}\" --bandeja", exe.display())))
+    registro::gravar(CHAVE_INICIO, "FeatherWorksLauncher", &format!("\"{}\" --bandeja", exe.display()))
+}
+
+/// Valores de texto em HKCU pela API do Windows: o `reg.exe` escondido que havia antes
+/// era um dos motivos de o Defender acusar o launcher.
+#[cfg(windows)]
+mod registro {
+    use windows_sys::Win32::System::Registry::{RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ};
+
+    fn largo(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain([0]).collect()
+    }
+
+    pub fn ler(chave: &str, nome: &str) -> Option<String> {
+        let (chave, nome) = (largo(chave), largo(nome));
+        let mut buf = [0u16; 1024];
+        let mut tam = std::mem::size_of_val(&buf) as u32;
+        let r = unsafe { RegGetValueW(HKEY_CURRENT_USER, chave.as_ptr(), nome.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut tam) };
+        (r == 0).then(|| String::from_utf16_lossy(&buf[..(tam as usize / 2).saturating_sub(1)]))
+    }
+
+    pub fn gravar(chave: &str, nome: &str, valor: &str) -> Result<(), String> {
+        let (chave, nome, valor) = (largo(chave), largo(nome), largo(valor));
+        let r = unsafe { RegSetKeyValueW(HKEY_CURRENT_USER, chave.as_ptr(), nome.as_ptr(), REG_SZ, valor.as_ptr().cast(), (valor.len() * 2) as u32) };
+        (r == 0).then_some(()).ok_or_else(|| format!("não gravou no registro (erro {r})"))
+    }
+
+    pub fn apagar(chave: &str, nome: &str) {
+        let (chave, nome) = (largo(chave), largo(nome));
+        unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, chave.as_ptr(), nome.as_ptr()) };
+    }
 }
 
 #[cfg(target_os = "macos")]

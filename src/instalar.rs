@@ -75,9 +75,187 @@ pub fn executavel(app: &App) -> Option<PathBuf> {
     } else if cfg!(target_os = "macos") {
         vec![casa.join("Applications").join(format!("{}.app", app.nome())), PathBuf::from(format!("/Applications/{}.app", app.nome()))]
     } else {
-        vec![casa.join(".local/bin").join(app.id), Path::new("/usr/bin").join(app.id)]
+        vec![casa.join(".local/bin").join(app.id), Path::new("/usr/bin").join(app.id), Path::new("/snap/bin").join(nome_snap(app))]
     };
     candidatos.into_iter().find(|c| c.exists())
+}
+
+/// De onde veio uma cópia do app. No Linux o mesmo app pode estar ao mesmo tempo pelo launcher,
+/// pelo .deb, pela Snap Store e pelo Flatpak: o launcher usa e atualiza a que já existe, pelo
+/// caminho dela, em vez de instalar mais uma em `~/.local/bin` (era assim que um .deb antigo
+/// ficava esquecido ao lado da cópia nova).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origem {
+    Launcher,
+    Pacote,
+    Snap,
+    Flatpak,
+}
+
+impl Origem {
+    pub fn nome(self) -> &'static str {
+        match self {
+            Origem::Launcher => "launcher",
+            Origem::Pacote => "pacote do sistema",
+            Origem::Snap => "Snap Store",
+            Origem::Flatpak => "Flatpak",
+        }
+    }
+}
+
+/// O FeatherNotes foi publicado na Snap Store como `feather-notes`; os outros com o próprio id.
+fn nome_snap(app: &App) -> &'static str {
+    if app.id == "feathernotes" { "feather-notes" } else { app.id }
+}
+
+fn id_flatpak(app: &App) -> String {
+    format!("io.github.feather_works.{}", app.nome())
+}
+
+/// `--user` ou `--system`, conforme onde o Flatpak do app está; `None` sem Flatpak.
+fn escopo_flatpak(app: &App) -> Option<&'static str> {
+    let id = id_flatpak(app);
+    let casa = dirs::data_dir().unwrap_or_default().join("flatpak/app").join(&id);
+    if casa.exists() {
+        Some("--user")
+    } else {
+        Path::new("/var/lib/flatpak/app").join(&id).exists().then_some("--system")
+    }
+}
+
+/// As cópias instaladas, da que o launcher usa (a primeira) para a última. Só olha arquivos:
+/// roda a cada "Verificar", para os sete apps.
+pub fn copias(app: &App) -> Vec<Origem> {
+    if !cfg!(all(unix, not(target_os = "macos"))) {
+        return executavel(app).map(|_| vec![Origem::Launcher]).unwrap_or_default();
+    }
+    let casa = dirs::home_dir().unwrap_or_default();
+    let mut v = Vec::new();
+    if casa.join(".local/bin").join(app.id).exists() {
+        v.push(Origem::Launcher);
+    }
+    if Path::new("/usr/bin").join(app.id).exists() {
+        v.push(Origem::Pacote);
+    }
+    if Path::new("/snap/bin").join(nome_snap(app)).exists() {
+        v.push(Origem::Snap);
+    }
+    if escopo_flatpak(app).is_some() {
+        v.push(Origem::Flatpak);
+    }
+    v
+}
+
+/// A cópia que o launcher instalou; no Linux só a de `~/.local/bin` (a de `/usr/bin` é do .deb).
+fn copia_do_launcher(app: &App) -> Option<PathBuf> {
+    if cfg!(all(unix, not(target_os = "macos"))) {
+        Some(dirs::home_dir()?.join(".local/bin").join(app.id)).filter(|p| p.exists())
+    } else {
+        executavel(app)
+    }
+}
+
+fn saida(cmd: &mut Command) -> Option<String> {
+    cmd.output().ok().filter(|s| s.status.success()).map(|s| String::from_utf8_lossy(&s.stdout).trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// A versão da cópia que veio por fora do launcher, perguntada a quem a instalou.
+pub fn versao_de(app: &App, origem: Origem) -> Option<String> {
+    match origem {
+        // No Linux a do launcher está no registro: o dpkg responderia a versão do .deb, não a dela.
+        Origem::Launcher if cfg!(all(unix, not(target_os = "macos"))) => None,
+        Origem::Launcher => executavel(app).and_then(|exe| versao_externa(app, &exe)),
+        Origem::Pacote => {
+            let v = saida(Command::new("dpkg-query").args(["-W", "-f=${Version}", app.id])).or_else(|| saida(Command::new("rpm").args(["-q", "--qf", "%{VERSION}", app.id])))?;
+            limpar_versao(&v)
+        }
+        Origem::Snap => versao_snap(&saida(Command::new("snap").args(["list", nome_snap(app)]))?, nome_snap(app)),
+        Origem::Flatpak => versao_flatpak(&saida(Command::new("flatpak").args(["list", "--app", "--columns=application,version"]))?, &id_flatpak(app)),
+    }
+}
+
+/// `snap list <nome>`: cabeçalho e uma linha "nome  versão  rev  canal  publicador  notas".
+fn versao_snap(lista: &str, nome: &str) -> Option<String> {
+    let linha = lista.lines().find(|l| l.split_whitespace().next() == Some(nome))?;
+    limpar_versao(linha.split_whitespace().nth(1)?)
+}
+
+/// `flatpak list --app --columns=application,version`: "id<TAB>versão" por linha.
+fn versao_flatpak(lista: &str, id: &str) -> Option<String> {
+    let linha = lista.lines().find(|l| l.split_whitespace().next() == Some(id))?;
+    limpar_versao(linha.split_whitespace().nth(1)?)
+}
+
+/// Atualiza a cópia que não é do launcher pelo caminho dela e devolve a versão que ficou.
+/// O .deb vem da mesma release (com o SHA256 conferido); Snap e Flatpak atualizam pela loja
+/// deles, que às vezes ainda não tem a versão do GitHub.
+pub async fn atualizar_por_fora(app: &'static App, origem: Origem, rel: Release) -> Result<String, String> {
+    match origem {
+        Origem::Launcher => Err("a cópia do launcher se atualiza pelo pacote da release".into()),
+        Origem::Pacote => {
+            let dpkg = Command::new("dpkg-query").args(["-W", app.id]).output().is_ok_and(|s| s.status.success());
+            if !dpkg {
+                return Err(format!("{} foi instalado pelo rpm: atualize pelo gerenciador de pacotes do sistema", app.nome()));
+            }
+            let pacote = rel.arquivos.iter().find(|a| a.nome.ends_with("-linux-amd64.deb")).cloned().ok_or("esta versão não tem .deb")?;
+            let esperado = soma_esperada(&rel, &pacote.nome).await?;
+            let arquivo = parcial(&pacote, &rel.versao);
+            fs::create_dir_all(pasta_downloads()).map_err(|e| e.to_string())?;
+            let (mut progresso, _) = pelicano::futures::channel::mpsc::channel(1);
+            baixar(&pacote, &arquivo, &mut progresso).await?;
+            let versao = rel.versao.clone();
+            tokio::task::spawn_blocking(move || {
+                let r = if sha256(&arquivo)? != esperado {
+                    Err("o arquivo baixado não confere com o SHA256 da versão; tente de novo".to_string())
+                } else {
+                    rodar(Command::new("pkexec").arg("dpkg").arg("-i").arg(&arquivo)).map_err(|_| format!("{} não foi atualizado (senha recusada ou cancelada)", app.nome()))
+                };
+                let _ = fs::remove_file(&arquivo);
+                r.map(|_| versao)
+            })
+            .await
+            .map_err(|e| e.to_string())?
+        }
+        Origem::Snap | Origem::Flatpak => {
+            let antes = versao_de(app, origem);
+            tokio::task::spawn_blocking(move || {
+                let r = if origem == Origem::Snap {
+                    rodar(Command::new("pkexec").args(["snap", "refresh", nome_snap(app)]))
+                } else {
+                    let escopo = escopo_flatpak(app).unwrap_or("--user");
+                    rodar(Command::new("flatpak").args(["update", "-y", "--noninteractive", escopo, &id_flatpak(app)]))
+                };
+                r.map_err(|_| format!("{} não foi atualizado pela {}", app.nome(), origem.nome()))?;
+                let depois = versao_de(app, origem).ok_or("não deu para ler a versão depois de atualizar")?;
+                if Some(&depois) == antes.as_ref() && depois != rel.versao {
+                    return Err(format!("a {} ainda não tem a {}; quando chegar, ela atualiza sozinha", origem.nome(), rel.versao));
+                }
+                Ok(depois)
+            })
+            .await
+            .map_err(|e| e.to_string())?
+        }
+    }
+}
+
+/// Remove uma cópia pelo caminho dela. O launcher também tira o app do registro.
+pub fn desinstalar_copia(app: &App, origem: Origem) -> Result<(), String> {
+    let r = match origem {
+        Origem::Launcher => copia_do_launcher(app).ok_or("não encontrei o aplicativo instalado".to_string()).and_then(|exe| desinstalar_em(app, &exe)),
+        Origem::Pacote => desinstalar_em(app, &Path::new("/usr/bin").join(app.id)),
+        Origem::Snap => rodar(Command::new("pkexec").args(["snap", "remove", nome_snap(app)])).map_err(|_| format!("a cópia da Snap Store não foi removida (senha recusada ou cancelada)")),
+        Origem::Flatpak => {
+            let escopo = escopo_flatpak(app).unwrap_or("--user");
+            rodar(Command::new("flatpak").args(["uninstall", "-y", "--noninteractive", escopo, &id_flatpak(app)])).map_err(|_| "a cópia do Flatpak não foi removida".to_string())
+        }
+    };
+    r?;
+    if origem == Origem::Launcher {
+        alterar_instalados(&pasta_dados(), |mapa| {
+            mapa.remove(app.id);
+        })?;
+    }
+    Ok(())
 }
 
 /// A versão de um app que o launcher não instalou, perguntada a quem instalou
@@ -109,6 +287,9 @@ fn limpar_versao(v: &str) -> Option<String> {
 }
 
 pub fn abrir(app: &App) -> Result<(), String> {
+    if copias(app).first() == Some(&Origem::Flatpak) {
+        return Command::new("flatpak").args(["run", &id_flatpak(app)]).spawn().map(|_| ()).map_err(|e| format!("não abriu: {e}"));
+    }
     let exe = executavel(app).ok_or("não encontrei o aplicativo instalado")?;
     let mut cmd = if cfg!(target_os = "macos") {
         let mut c = Command::new("open");
@@ -131,6 +312,10 @@ pub fn abrir(app: &App) -> Result<(), String> {
 
 /// Abre a pasta onde o app está no gerenciador de arquivos do sistema.
 pub fn mostrar_pasta(app: &App) -> Result<(), String> {
+    if let (Some(Origem::Flatpak), Some(escopo)) = (copias(app).first(), escopo_flatpak(app)) {
+        let base = if escopo == "--user" { dirs::data_dir().unwrap_or_default().join("flatpak/app") } else { PathBuf::from("/var/lib/flatpak/app") };
+        return abrir_externo(base.join(id_flatpak(app)).as_os_str());
+    }
     let exe = executavel(app).ok_or("não encontrei o aplicativo instalado")?;
     abrir_externo(exe.parent().unwrap_or(&exe).as_os_str())
 }
@@ -143,17 +328,14 @@ pub fn abrir_externo(alvo: &std::ffi::OsStr) -> Result<(), String> {
 
 /// O app veio de um pacote do sistema (.deb/.rpm): desinstalar pede a senha de administrador.
 pub fn pelo_sistema(app: &App) -> bool {
-    cfg!(all(unix, not(target_os = "macos"))) && executavel(app).is_some_and(|exe| !exe.starts_with(dirs::home_dir().unwrap_or_default()))
+    matches!(copias(app).first(), Some(Origem::Pacote | Origem::Snap))
 }
 
 /// Tira o app do sistema e do registro do launcher. Os documentos e as
 /// configurações da pessoa ficam onde estão.
 pub fn desinstalar(app: &App) -> Result<(), String> {
-    let exe = executavel(app).ok_or("não encontrei o aplicativo instalado")?;
-    desinstalar_em(app, &exe)?;
-    alterar_instalados(&pasta_dados(), |mapa| {
-        mapa.remove(app.id);
-    })
+    let principal = *copias(app).first().ok_or("não encontrei o aplicativo instalado")?;
+    desinstalar_copia(app, principal)
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -572,6 +754,18 @@ pub fn iniciar_com_sistema(_sim: bool) -> Result<(), String> {
 #[cfg(test)]
 mod testes {
     use super::*;
+
+    #[test]
+    fn le_a_versao_do_snap_e_do_flatpak() {
+        let snap = "Name          Version  Rev  Tracking       Publisher    Notes\nfeathersheet  0.2.9    3    latest/stable  marceloagon  -";
+        assert_eq!(versao_snap(snap, "feathersheet").as_deref(), Some("0.2.9"));
+        assert_eq!(versao_snap(snap, "featherpdf"), None);
+        let flatpak = "io.github.feather_works.FeatherPDF\t0.1.4\nio.github.feather_works.FeatherSheet\t0.2.8";
+        assert_eq!(versao_flatpak(flatpak, "io.github.feather_works.FeatherSheet").as_deref(), Some("0.2.8"));
+        assert_eq!(versao_flatpak(flatpak, "io.github.feather_works.FeatherNotes"), None);
+        assert_eq!(nome_snap(&crate::releases::APPS[6]), "feather-notes");
+        assert_eq!(id_flatpak(&crate::releases::APPS[0]), "io.github.feather_works.FeatherSheet");
+    }
 
     #[test]
     #[cfg(all(unix, not(target_os = "macos")))]

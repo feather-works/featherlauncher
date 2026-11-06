@@ -93,6 +93,8 @@ struct Linha {
     consulta: Consulta,
     /// Versão instalada: `Some("?")` quando o app está lá mas não foi o launcher que instalou.
     instalada: Option<String>,
+    /// As cópias que existem no computador; a primeira é a que o launcher abre e atualiza.
+    copias: Vec<instalar::Origem>,
     download: Option<Download>,
     erro: Option<String>,
 }
@@ -476,6 +478,8 @@ enum Msg {
     Grade(bool),
     IniciarComSistema(bool),
     VersaoExterna(usize, Option<String>),
+    /// Remove as cópias além da primeira (o mesmo app pelo .deb, Snap e Flatpak).
+    RemoverExtras(usize),
     Amostrar,
     LauncherRelease(Result<Option<Release>, String>),
     AtualizarLauncher,
@@ -571,20 +575,36 @@ impl Launcher {
         let mut antigas = std::mem::take(&mut self.linhas).into_iter();
         self.linhas = APPS
             .iter()
-            .map(|app| Linha {
+            .map(|_| Linha {
                 consulta: Consulta::Verificando,
-                // Instalado por fora: "?" até a versão chegar do `dpkg`/`rpm` (ver abaixo).
-                instalada: registro.get(app.id).cloned().or_else(|| instalar::executavel(app).map(|_| "?".into())),
+                instalada: None,
+                copias: Vec::new(),
                 // Download em andamento sobrevive ao "Verificar".
                 download: antigas.next().and_then(|a| a.download),
                 erro: None,
             })
             .collect();
-        let externas = APPS.iter().enumerate().filter(|&(_, app)| !registro.contains_key(app.id)).map(|(i, app)| {
-            let versao = no_tokio(async move { tokio::task::spawn_blocking(move || instalar::executavel(app).and_then(|exe| instalar::versao_externa(app, &exe))).await.ok().flatten() });
-            Task::perform(versao, move |v| Msg::VersaoExterna(i, v))
-        });
+        let externas: Vec<_> = (0..APPS.len()).map(|i| self.ler_copias(i, &registro)).collect();
         Task::batch(APPS.iter().enumerate().map(|(i, app)| Task::perform(no_tokio(releases::ultima(app.id)), move |r| Msg::Release(i, r))).chain(externas))
+    }
+
+    /// O que está instalado do app `i`: a versão da cópia do launcher vem do registro; a de
+    /// uma cópia de fora (.deb, Snap, Flatpak) é "?" até quem a instalou responder.
+    fn ler_copias(&mut self, i: usize, registro: &std::collections::HashMap<String, String>) -> Task<Msg> {
+        let app = &APPS[i];
+        let linha = &mut self.linhas[i];
+        linha.copias = instalar::copias(app);
+        linha.instalada = match linha.copias.first() {
+            None => None,
+            Some(instalar::Origem::Launcher) => registro.get(app.id).cloned().or(Some("?".into())),
+            Some(_) => Some("?".into()),
+        };
+        if linha.instalada.as_deref() != Some("?") {
+            return Task::none();
+        }
+        let origem = linha.copias[0];
+        let versao = no_tokio(async move { tokio::task::spawn_blocking(move || instalar::versao_de(app, origem)).await.ok().flatten() });
+        Task::perform(versao, move |v| Msg::VersaoExterna(i, v))
     }
 
     fn instalar(&mut self, i: usize) -> Task<Msg> {
@@ -592,6 +612,12 @@ impl Launcher {
         let Some(rel) = linha.release().cloned() else { return Task::none() };
         if matches!(linha.download, Some(Download::Baixando { .. } | Download::Instalando | Download::Desinstalando)) {
             return Task::none();
+        }
+        // Já instalado por fora: atualiza essa cópia pelo caminho dela, sem pôr outra em ~/.local/bin.
+        if let Some(&origem) = linha.copias.first().filter(|o| **o != instalar::Origem::Launcher) {
+            linha.download = Some(Download::Instalando);
+            linha.erro = None;
+            return Task::perform(no_tokio(instalar::atualizar_por_fora(&APPS[i], origem, rel)), move |r| Msg::Evento(i, Evento::Fim(r)));
         }
         let (baixado, total) = match linha.download {
             Some(Download::Pausado { baixado, total }) => (baixado, total),
@@ -778,6 +804,10 @@ impl Launcher {
         if let Some(e) = l.erro.as_ref().or(falha) {
             nome = nome.push(text(e.as_str()).size(12).color(erro()));
         }
+        if l.copias.len() > 1 {
+            let onde: Vec<_> = l.copias.iter().map(|o| o.nome()).collect();
+            nome = nome.push(text(format!("Instalado {} vezes: {}", l.copias.len(), onde.join(", "))).size(12).color(tom(LARANJA)));
+        }
         if self.confirmar == Some(i) {
             let aviso = if instalar::pelo_sistema(app) { format!("Desinstalar {}? É pacote do sistema: ele vai pedir sua senha.", app.nome()) } else { format!("Desinstalar {}?", app.nome()) };
             nome = nome.push(text(aviso).size(12).color(erro()));
@@ -791,6 +821,10 @@ impl Launcher {
             _ => v("—".into()).color(mudo()).into(),
         };
         let col_versao = column![versao].spacing(4);
+        let col_versao = match l.copias.first() {
+            Some(instalar::Origem::Launcher) | None => col_versao,
+            Some(o) => col_versao.push(text(format!("pelo {}", o.nome()).replace("pelo Snap", "pela Snap")).size(12).color(mudo())),
+        };
         let col_versao = match rel {
             Some(_) => col_versao.push(button(text("Ver novidades ›").size(12).color(tom(AZUL))).on_press(Msg::Novidades(i)).padding(0.0).style(|_, _| Style::default())),
             None if apagado => col_versao.push(text("Em desenvolvimento").size(12).color(mudo())),
@@ -877,14 +911,16 @@ impl Launcher {
         let item = |icone: Element<'static, Msg>, rotulo: String, m: Msg, perigoso: bool| {
             button(row![icone, text(rotulo).size(13).color(if perigoso { erro() } else { texto() })].spacing(10).align(Align::Center)).on_press(m).width(Length::FILL).padding([8u16, 10]).style(controle(false))
         };
-        let painel = container(
-            column![
-                item(traco(ICONE_PASTA, 16.0, texto()).into(), "Mostrar pasta de instalação".into(), Msg::MostrarPasta(i), false),
-                container(linha_fina(borda_suave())).padding([4u16, 0]),
-                item(traco(ICONE_LIXO, 16.0, erro()).into(), format!("Desinstalar {}…", APPS[i].nome()), Msg::PedirDesinstalar(i), true),
-            ]
-            .spacing(2),
-        )
+        let mut lista = column![
+            item(traco(ICONE_PASTA, 16.0, texto()).into(), "Mostrar pasta de instalação".into(), Msg::MostrarPasta(i), false),
+            container(linha_fina(borda_suave())).padding([4u16, 0]),
+        ]
+        .spacing(2);
+        if let [fica, _, ..] = self.linhas[i].copias[..] {
+            lista = lista.push(item(traco(ICONE_LIXO, 16.0, erro()).into(), format!("Deixar só a cópia do {}", fica.nome()), Msg::RemoverExtras(i), true));
+        }
+        let lista = lista.push(item(traco(ICONE_LIXO, 16.0, erro()).into(), format!("Desinstalar {}…", APPS[i].nome()), Msg::PedirDesinstalar(i), true));
+        let painel = container(lista)
         .padding(6.0)
         .width(LARGURA_MENU)
         .style(|_| Style::default().background(painel()).border(Border::rounded(10.0).color(borda(), 1.0)).shadow(Shadow { color: Color::BLACK.alpha(0.35), offset: Point::new(0.0, 6.0), blur: 20.0 }));
@@ -1076,13 +1112,28 @@ impl App for Launcher {
                 let feito = no_tokio(async move { tokio::task::spawn_blocking(move || instalar::desinstalar(&APPS[i])).await.map_err(|e| e.to_string())? });
                 return Task::perform(feito, move |r| Msg::Desinstalado(i, r));
             }
+            Msg::RemoverExtras(i) => {
+                self.menu = None;
+                let linha = &mut self.linhas[i];
+                if linha.download.is_some() || linha.copias.len() < 2 {
+                    return Task::none();
+                }
+                let extras = linha.copias[1..].to_vec();
+                linha.download = Some(Download::Desinstalando);
+                linha.erro = None;
+                let feito = no_tokio(async move {
+                    tokio::task::spawn_blocking(move || extras.into_iter().try_for_each(|o| instalar::desinstalar_copia(&APPS[i], o))).await.map_err(|e| e.to_string())?
+                });
+                return Task::perform(feito, move |r| Msg::Desinstalado(i, r));
+            }
             Msg::Desinstalado(i, r) => {
                 let linha = &mut self.linhas[i];
                 linha.download = None;
-                match r {
-                    Ok(()) => linha.instalada = None,
-                    Err(e) => linha.erro = Some(e),
+                if let Err(e) = r {
+                    linha.erro = Some(e);
                 }
+                // Removida uma cópia, outra pode ter ficado (o .deb atrás da do launcher): relê.
+                return self.ler_copias(i, &instalar::instalados());
             }
             Msg::Esc if self.perguntar_inicio => return self.update(Msg::IniciarComSistema(false)),
             Msg::Esc => {

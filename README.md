@@ -24,7 +24,9 @@
 
 - Lista os aplicativos da suíte com a versão instalada e a última publicada no GitHub.
 - Instala e atualiza os apps: no Windows em `C:\Program Files\FeatherWorks\<App>` (o Windows pede administrador a cada instalação); no Linux na pasta do usuário (`~/.local`), sem administrador.
+- No Linux, usa a cópia que já está instalada (`.deb`, Snap ou Flatpak) em vez de instalar outra: atualiza e abre essa cópia, mostra de onde ela veio e avisa quando o app está instalado mais de uma vez.
 - Confere cada pacote pelo `SHA256SUMS` da release antes de instalar.
+- Abre também em placa de vídeo antiga sem Vulkan/OpenGL utilizável (Intel HD 4000): a janela passa a ser desenhada pela CPU.
 - Pausa e continua downloads; "Atualizar tudo" de uma vez.
 - Consulta o GitHub com cache (ETag) e, se a cota da API acabar, pelo feed de releases.
 - Sem conta, sem login, sem telemetria.

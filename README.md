@@ -5,37 +5,37 @@
 <h1 align="center">FeatherWorks Launcher</h1>
 
 <p align="center">
-  Instala, atualiza e abre os aplicativos da suíte FeatherWorks.
+  Installs, updates and opens the apps of the FeatherWorks suite.
 </p>
 
 <p align="center">
-  <img src="docs/launcher.png" width="820" alt="O launcher com o FeatherSheet e o FeatherSlide instalados">
+  <img src="docs/launcher.png" width="820" alt="The launcher with FeatherSheet and FeatherSlide installed">
 </p>
 
-## Baixar
+## Download
 
-| Sistema | Arquivo |
+| System | File |
 |---|---|
 | Linux (Debian, Ubuntu, Mint…) | [featherlauncher-linux-amd64.deb](https://github.com/feather-works/featherlauncher/releases/latest/download/featherlauncher-linux-amd64.deb) |
-| Linux (qualquer distribuição) | [featherlauncher-linux-x86_64.tar.gz](https://github.com/feather-works/featherlauncher/releases/latest/download/featherlauncher-linux-x86_64.tar.gz): descompacte e rode `./instalar.sh` |
-| Windows 10/11 | [featherlauncher-windows-x64-instalador.exe](https://github.com/feather-works/featherlauncher/releases/latest/download/featherlauncher-windows-x64-instalador.exe): instala em `C:\Program Files\FeatherWorks\Launcher` (pede administrador uma vez). Portátil: [featherlauncher-windows-x64.exe](https://github.com/feather-works/featherlauncher/releases/latest/download/featherlauncher-windows-x64.exe), é só abrir |
+| Linux (any distribution) | [featherlauncher-linux-x86_64.tar.gz](https://github.com/feather-works/featherlauncher/releases/latest/download/featherlauncher-linux-x86_64.tar.gz): extract it and run `./instalar.sh` |
+| Windows 10/11 | [featherlauncher-windows-x64-instalador.exe](https://github.com/feather-works/featherlauncher/releases/latest/download/featherlauncher-windows-x64-instalador.exe): installs to `C:\Program Files\FeatherWorks\Launcher` (asks for administrator once). Portable: [featherlauncher-windows-x64.exe](https://github.com/feather-works/featherlauncher/releases/latest/download/featherlauncher-windows-x64.exe), just open it |
 
-## O que ele faz
+## What it does
 
-- Lista os aplicativos da suíte com a versão instalada e a última publicada no GitHub.
-- Instala e atualiza os apps: no Windows em `C:\Program Files\FeatherWorks\<App>` (o Windows pede administrador a cada instalação); no Linux na pasta do usuário (`~/.local`), sem administrador.
-- No Linux, usa a cópia que já está instalada (`.deb`, Snap ou Flatpak) em vez de instalar outra: atualiza e abre essa cópia, mostra de onde ela veio e avisa quando o app está instalado mais de uma vez.
-- Confere cada pacote pelo `SHA256SUMS` da release antes de instalar.
-- Abre também em placa de vídeo antiga sem Vulkan/OpenGL utilizável (Intel HD 4000): a janela passa a ser desenhada pela CPU.
-- Pausa e continua downloads; "Atualizar tudo" de uma vez.
-- Consulta o GitHub com cache (ETag) e, se a cota da API acabar, pelo feed de releases.
-- Sem conta, sem login, sem telemetria.
+- Lists the suite apps with the installed version and the latest one published on GitHub.
+- Installs and updates the apps: on Windows in `C:\Program Files\FeatherWorks\<App>` (Windows asks for administrator on each install); on Linux in the user folder (`~/.local`), without administrator.
+- On Linux, it uses the copy that is already installed (`.deb`, Snap or Flatpak) instead of installing another one: it updates and opens that copy, shows where it came from and warns when an app is installed more than once.
+- Checks every package against the release `SHA256SUMS` before installing.
+- Also opens on old graphics cards without usable Vulkan/OpenGL (Intel HD 4000): the window is then drawn by the CPU.
+- Pauses and resumes downloads; "Update all" in one go.
+- Queries GitHub with a cache (ETag) and, if the API quota runs out, through the releases feed.
+- No account, no login, no telemetry.
 
-## Compilar
+## Build
 
 ```bash
 cargo run --release
-pacote/gerar.sh          # pacotes em pacote/saida/
+pacote/gerar.sh          # packages in pacote/saida/
 ```
 
-Licença: GPL-3.0.
+License: GPL-3.0.

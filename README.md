@@ -27,7 +27,7 @@
 - On Linux, it uses the copy that is already installed (`.deb`, Snap or Flatpak) instead of installing another one: it updates and opens that copy, shows where it came from and warns when an app is installed more than once.
 - Checks every package against the release `SHA256SUMS` before installing.
 - Also opens on old graphics cards without usable Vulkan/OpenGL (Intel HD 4000): the window is then drawn by the CPU.
-- Pauses and resumes downloads; "Update all" in one go.
+- Pauses and resumes downloads; "Atualizar tudo" (update all) in one go.
 - Queries GitHub with a cache (ETag) and, if the API quota runs out, through the releases feed.
 - No account, no login, no telemetry.
 

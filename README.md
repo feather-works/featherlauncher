@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/launcher.png" width="820" alt="The launcher with FeatherSheet and FeatherSlide installed">
+  <img src="docs/launcher.png" width="820" alt="The launcher with the FeatherWorks apps">
 </p>
 
 ## Download

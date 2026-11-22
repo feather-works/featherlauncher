@@ -21,7 +21,7 @@ impl App {
 }
 
 pub const APPS: [App; 8] = [
-    App { id: "feathersheet", sufixo: "Sheet", descricao: "Planilhas e dados", etiquetas: &["Planilhas", "Tabela dinâmica", "OpenQuery", "Macros (JS)", "Gráficos"], cor: "#287846" },
+    App { id: "feathersheet", sufixo: "Sheet", descricao: "Planilhas e dados", etiquetas: &["Planilhas", "Tabela dinâmica", "FeatherQuery", "Macros (JS)", "Gráficos"], cor: "#287846" },
     App { id: "featherslide", sufixo: "Slide", descricao: "Apresentações", etiquetas: &["Slides", "Animações", "Temas", "Exportação"], cor: "#a87f0c" },
     App { id: "featherdocs", sufixo: "Docs", descricao: "Documentos de texto", etiquetas: &["Documentos", "Markdown", "LaTeX", "Whiteboard", "DOCX"], cor: "#236ac7" },
     App { id: "featherdb", sufixo: "DB", descricao: "Cliente de banco de dados", etiquetas: &["Editor SQL", "PostgreSQL", "MySQL", "MongoDB", "ODBC"], cor: "#0b7285" },

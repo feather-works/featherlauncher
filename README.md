@@ -4,6 +4,8 @@
 
 <h1 align="center">FeatherWorks Launcher</h1>
 
+<p align="center"><a href="https://discord.gg/b4Epb4eSSH"><img src="https://img.shields.io/badge/Discord-Maragon.Dev-5865F2?logo=discord&logoColor=white" alt="Discord"></a></p>
+
 <p align="center">
   Installs, updates and opens the apps of the FeatherWorks suite.
 </p>
